@@ -8,33 +8,39 @@
   </head>
   <body>
     <main id="app-shell" class="shell">
+
+      <header class="app-header">
+        <span class="app-title">Focus Lock</span>
+        <span class="app-desc">番茄时钟 · 休息锁定</span>
+      </header>
+
       <section class="hero">
-        <div class="hero-copy">
-          <p class="eyebrow">Focus Lock</p>
-          <h1>番茄时钟 + 休息强制锁定</h1>
-          <p class="lede">
-            工作时专注，休息时离开屏幕。休息锁定页会在所有显示器上展示今日重点、一言和喝水/站立提醒。
-          </p>
-          <p class="disclaimer">
-            这是应用级高约束锁定，不是系统级家长控制。macOS 可能需要辅助功能权限配合。
-          </p>
-        </div>
         <div class="timer-card">
           <div class="timer-meta">
             <span id="phase-pill" class="pill">待机</span>
             <span id="cycle-text">今日完成 0 轮</span>
           </div>
-          <div id="countdown" class="countdown">25:00</div>
-          <div class="timer-footer">
-            <span id="status-text">准备开始新的专注轮次</span>
-            <span id="quote-inline">“专注一点，世界会安静一些。”</span>
-          </div>
+          <div id="countdown">25:00</div>
+          <p id="status-text">准备开始新的专注轮次</p>
+          <p id="quote-inline"></p>
           <div class="button-row">
             <button id="start-btn" class="primary">开始番茄</button>
             <button id="pause-btn">暂停</button>
             <button id="resume-btn">继续</button>
             <button id="cancel-btn" class="danger">取消</button>
           </div>
+        </div>
+
+        <div class="quote-side">
+          <p class="side-label">当前一言</p>
+          <blockquote id="quote-card"></blockquote>
+          <div class="reminder-band">
+            <span>喝水</span>
+            <span>站立</span>
+            <span>远眺</span>
+            <span>放松肩颈</span>
+          </div>
+          <p class="side-note">工作时专注，休息时离开屏幕。休息锁定页会在所有显示器上展示今日重点、一言和提醒。</p>
         </div>
       </section>
 
@@ -83,38 +89,24 @@
           </div>
           <button id="save-tasks-btn" class="secondary">保存事项</button>
         </article>
-
-        <article class="panel info-panel">
-          <div class="panel-head">
-            <h2>当前一言</h2>
-            <p>离线本地文案 + 在线缓存兜底。</p>
-          </div>
-          <blockquote id="quote-card" class="quote-card"></blockquote>
-          <div class="reminder-band">
-            <span>喝水</span>
-            <span>站立</span>
-            <span>远眺</span>
-            <span>放松肩颈</span>
-          </div>
-        </article>
       </section>
+
     </main>
 
     <section id="lock-shell" class="lock-shell" hidden>
-      <div class="lock-overlay"></div>
       <div class="lock-content">
         <p class="lock-tag">休息时间</p>
         <h1 id="lock-countdown">05:00</h1>
-        <p id="lock-status" class="lock-status">离开屏幕，喝水，站起来活动一下。</p>
+        <p id="lock-status">离开屏幕，喝水，站起来活动一下。</p>
         <div class="lock-panels">
           <article class="lock-panel">
             <h2>今日重要事项</h2>
             <ul id="lock-tasks"></ul>
           </article>
-          <article class="lock-panel quote-lock-panel">
+          <article class="lock-panel">
             <h2>一言</h2>
             <blockquote id="lock-quote"></blockquote>
-            <p id="lock-reminder" class="lock-reminder"></p>
+            <p id="lock-reminder"></p>
           </article>
         </div>
       </div>
