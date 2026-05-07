@@ -148,13 +148,12 @@ input[type="checkbox"] {
   color: var(--muted);
 }
 
-/* ── Hero ──────────────────────────────────────────── */
+/* ── Card Grid ─────────────────────────────────────── */
 
-.hero {
+.card-grid {
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
+  grid-template-columns: 1fr 1fr;
   gap: 14px;
-  margin-bottom: 14px;
 }
 
 /* ── Timer Card ────────────────────────────────────── */
@@ -279,13 +278,6 @@ input[type="checkbox"] {
   margin-top: auto;
 }
 
-/* ── Grid ──────────────────────────────────────────── */
-
-.grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-}
 
 /* ── Panel ─────────────────────────────────────────── */
 
@@ -475,7 +467,7 @@ input[type="checkbox"] {
 /* ── Responsive ────────────────────────────────────── */
 
 @media (max-width: 960px) {
-  .hero {
+  .card-grid {
     grid-template-columns: 1fr;
   }
 
@@ -487,10 +479,6 @@ input[type="checkbox"] {
 @media (max-width: 640px) {
   .shell {
     padding: 18px 14px 36px;
-  }
-
-  .grid {
-    grid-template-columns: 1fr;
   }
 
   #countdown {
