@@ -27,7 +27,6 @@ const els = {
   onlineQuote: document.querySelector("#online-quote"),
   waterReminder: document.querySelector("#water-reminder"),
   standReminder: document.querySelector("#stand-reminder"),
-  launchOnLogin: document.querySelector("#launch-on-login"),
   taskInputs: [0, 1, 2].map((index) => document.querySelector(`#task-${index}`)),
   startBtn: document.querySelector("#start-btn"),
   pauseBtn: document.querySelector("#pause-btn"),
@@ -92,7 +91,6 @@ function applySettings(snapshot) {
   els.onlineQuote.checked = snapshot.settings.enableOnlineQuote;
   els.waterReminder.checked = snapshot.settings.enableWaterReminder;
   els.standReminder.checked = snapshot.settings.enableStandReminder;
-  els.launchOnLogin.checked = snapshot.settings.launchOnLogin;
 }
 
 function applyTasks(snapshot) {
@@ -128,14 +126,6 @@ function renderLock(snapshot) {
     els.lockTasks.appendChild(li);
   });
   els.lockReminder.textContent = reminders[state.reminderIndex % reminders.length];
-
-  if (state.reminderTimer) {
-    clearInterval(state.reminderTimer);
-  }
-  state.reminderTimer = setInterval(() => {
-    state.reminderIndex += 1;
-    els.lockReminder.textContent = reminders[state.reminderIndex % reminders.length];
-  }, 6000);
 }
 
 function render(snapshot) {
@@ -155,35 +145,52 @@ async function loadSnapshot() {
 }
 
 async function saveSettings() {
-  const settings = {
-    focusMinutes: Number(els.focusMinutes.value) || 25,
-    breakMinutes: Number(els.breakMinutes.value) || 5,
-    enableOnlineQuote: els.onlineQuote.checked,
-    enableWaterReminder: els.waterReminder.checked,
-    enableStandReminder: els.standReminder.checked,
-    launchOnLogin: els.launchOnLogin.checked
-  };
-  await invoke("save_settings", { settings });
+  try {
+    const settings = {
+      focusMinutes: Number(els.focusMinutes.value) || 25,
+      breakMinutes: Number(els.breakMinutes.value) || 5,
+      enableOnlineQuote: els.onlineQuote.checked,
+      enableWaterReminder: els.waterReminder.checked,
+      enableStandReminder: els.standReminder.checked
+    };
+    await invoke("save_settings", { settings });
+  } catch (err) {
+    els.statusText.textContent = `保存设置失败：${err}`;
+  }
 }
 
 async function saveTasks() {
-  const tasks = els.taskInputs.map((input) => input.value.trim());
-  await invoke("set_today_tasks", { tasks });
+  try {
+    const tasks = els.taskInputs.map((input) => input.value.trim());
+    await invoke("set_today_tasks", { tasks });
+  } catch (err) {
+    els.statusText.textContent = `保存事项失败：${err}`;
+  }
 }
 
 function bindEvents() {
   if (!isLockView) {
     els.startBtn.addEventListener("click", async () => {
-      const config = {
-        focusMinutes: Number(els.focusMinutes.value) || 25,
-        breakMinutes: Number(els.breakMinutes.value) || 5
-      };
-      await invoke("start_pomodoro", { config });
+      try {
+        const config = {
+          focusMinutes: Number(els.focusMinutes.value) || 25,
+          breakMinutes: Number(els.breakMinutes.value) || 5
+        };
+        await invoke("start_pomodoro", { config });
+      } catch (err) {
+        els.statusText.textContent = `启动失败：${err}`;
+      }
     });
 
-    els.pauseBtn.addEventListener("click", async () => invoke("pause_pomodoro"));
-    els.resumeBtn.addEventListener("click", async () => invoke("resume_pomodoro"));
-    els.cancelBtn.addEventListener("click", async () => invoke("cancel_pomodoro"));
+    els.pauseBtn.addEventListener("click", async () => {
+      try { await invoke("pause_pomodoro"); } catch (err) { els.statusText.textContent = `操作失败：${err}`; }
+    });
+    els.resumeBtn.addEventListener("click", async () => {
+      try { await invoke("resume_pomodoro"); } catch (err) { els.statusText.textContent = `操作失败：${err}`; }
+    });
+    els.cancelBtn.addEventListener("click", async () => {
+      try { await invoke("cancel_pomodoro"); } catch (err) { els.statusText.textContent = `操作失败：${err}`; }
+    });
     els.saveSettingsBtn.addEventListener("click", saveSettings);
     els.saveTasksBtn.addEventListener("click", saveTasks);
   } else {
@@ -208,6 +215,14 @@ async function init() {
 
   bindEvents();
   await loadSnapshot();
+  if (isLockView) {
+    state.reminderTimer = setInterval(() => {
+      if (!state.snapshot) return;
+      state.reminderIndex += 1;
+      const reminders = reminderPool(state.snapshot);
+      els.lockReminder.textContent = reminders[state.reminderIndex % reminders.length];
+    }, 6000);
+  }
   await listen("pomodoro://state", (event) => {
     render(event.payload);
   });

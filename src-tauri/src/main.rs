@@ -29,7 +29,6 @@ struct Settings {
     enable_online_quote: bool,
     enable_water_reminder: bool,
     enable_stand_reminder: bool,
-    launch_on_login: bool,
 }
 
 impl Default for Settings {
@@ -40,7 +39,6 @@ impl Default for Settings {
             enable_online_quote: true,
             enable_water_reminder: true,
             enable_stand_reminder: true,
-            launch_on_login: false,
         }
     }
 }
@@ -183,7 +181,9 @@ fn persist_state(app: &AppHandle, state: &PersistentState) -> tauri::Result<()> 
 }
 
 fn local_quote_seed() -> usize {
-    Local::now().timestamp().unsigned_abs() as usize
+    today_string()
+        .bytes()
+        .fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize))
 }
 
 fn local_quotes() -> &'static [(&'static str, &'static str)] {
@@ -418,7 +418,6 @@ fn tick_runtime(app: &AppHandle) {
         Emit,
         EnterBreak,
         ExitBreak,
-        SyncLocks,
     }
 
     let action = {
@@ -440,8 +439,6 @@ fn tick_runtime(app: &AppHandle) {
                         Phase::Break => Action::ExitBreak,
                         Phase::Idle => Action::None,
                     }
-                } else if runtime.phase == Phase::Break && elapsed > 0 {
-                    Action::SyncLocks
                 } else {
                     Action::Emit
                 }
@@ -454,10 +451,6 @@ fn tick_runtime(app: &AppHandle) {
         Action::Emit => emit_snapshot(app),
         Action::EnterBreak => transition_to_break(app),
         Action::ExitBreak => transition_to_idle(app),
-        Action::SyncLocks => {
-            let _ = sync_lock_windows(app);
-            emit_snapshot(app);
-        }
     }
 }
 
@@ -559,7 +552,7 @@ fn pause_pomodoro(app: AppHandle) -> Snapshot {
     {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
-        if runtime.phase != Phase::Idle {
+        if runtime.phase == Phase::Focus {
             runtime.paused = true;
         }
     }
@@ -572,7 +565,7 @@ fn resume_pomodoro(app: AppHandle) -> Snapshot {
     {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
-        if runtime.phase != Phase::Idle {
+        if runtime.phase == Phase::Focus {
             runtime.paused = false;
             runtime.last_tick = Instant::now();
         }
@@ -627,7 +620,7 @@ fn get_settings(app: AppHandle) -> Settings {
 
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String> {
-    {
+    let saved = {
         let state = app.state::<AppState>();
         let mut persistent = state.persistent.lock().unwrap();
         persistent.settings.focus_minutes = settings.focus_minutes.clamp(1, 180);
@@ -635,15 +628,22 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
         persistent.settings.enable_online_quote = settings.enable_online_quote;
         persistent.settings.enable_water_reminder = settings.enable_water_reminder;
         persistent.settings.enable_stand_reminder = settings.enable_stand_reminder;
-        persistent.settings.launch_on_login = settings.launch_on_login;
         persist_state(&app, &persistent).map_err(|err| err.to_string())?;
-    }
+        persistent.settings.clone()
+    };
     emit_snapshot(&app);
-    Ok(settings)
+    Ok(saved)
 }
 
 #[tauri::command]
 fn enter_break_lock(app: AppHandle) -> Snapshot {
+    {
+        let state = app.state::<AppState>();
+        let runtime = state.runtime.lock().unwrap();
+        if runtime.phase != Phase::Idle {
+            return build_snapshot(&app);
+        }
+    }
     transition_to_break(&app);
     build_snapshot(&app)
 }
@@ -677,7 +677,7 @@ fn main() {
             });
 
             let tray_app = app_handle.clone();
-            let mut tray = SystemTray::new()
+            let tray = SystemTray::new()
                 .with_icon(tray_icon())
                 .with_menu(
                     SystemTrayMenu::new()
@@ -699,9 +699,7 @@ fn main() {
                 });
 
             #[cfg(target_os = "macos")]
-            {
-                tray = tray.with_icon_as_template(true);
-            }
+            let tray = tray.with_icon_as_template(true);
 
             tray.build(app)?;
             tauri::async_runtime::spawn(refresh_online_quote(app_handle.clone()));
