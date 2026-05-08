@@ -13,7 +13,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{
     api::path::app_config_dir, AppHandle, CustomMenuItem, GlobalWindowEvent, Icon, Manager,
-    RunEvent, SystemTray, SystemTrayEvent, SystemTrayMenu, WindowBuilder, WindowEvent, WindowUrl,
+    RunEvent, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, WindowBuilder,
+    WindowEvent, WindowUrl,
 };
 
 const STATE_FILE_NAME: &str = "state.json";
@@ -233,9 +234,51 @@ fn build_snapshot(app: &AppHandle) -> Snapshot {
     }
 }
 
+fn format_duration_tray(secs: u64) -> String {
+    format!("{:02}:{:02}", secs / 60, secs % 60)
+}
+
+fn build_tray_menu(phase: Phase, remaining: u64, paused: bool) -> SystemTrayMenu {
+    let status = match phase {
+        Phase::Idle => "Focus Lock · 待机".to_string(),
+        Phase::Focus if paused => format!("专注暂停 · {}", format_duration_tray(remaining)),
+        Phase::Focus => format!("专注中 · {}", format_duration_tray(remaining)),
+        Phase::Break => format!("休息中 · {}", format_duration_tray(remaining)),
+    };
+
+    let mut menu = SystemTrayMenu::new()
+        .add_item(CustomMenuItem::new("status", status).disabled())
+        .add_native_item(SystemTrayMenuItem::Separator);
+
+    menu = match phase {
+        Phase::Idle => menu.add_item(CustomMenuItem::new("start", "开始番茄")),
+        Phase::Focus if paused => menu
+            .add_item(CustomMenuItem::new("resume", "继续专注"))
+            .add_item(CustomMenuItem::new("cancel", "取消本轮")),
+        Phase::Focus => menu
+            .add_item(CustomMenuItem::new("pause", "暂停"))
+            .add_item(CustomMenuItem::new("cancel", "取消本轮")),
+        Phase::Break => menu.add_item(CustomMenuItem::new("end_break", "提前结束休息")),
+    };
+
+    menu.add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(CustomMenuItem::new("show", "显示主窗口"))
+        .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(CustomMenuItem::new("quit", "退出"))
+}
+
+fn update_tray_menu(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let runtime = state.runtime.lock().unwrap();
+    let menu = build_tray_menu(runtime.phase, runtime.remaining_seconds, runtime.paused);
+    drop(runtime);
+    let _ = app.tray_handle().set_menu(menu);
+}
+
 fn emit_snapshot(app: &AppHandle) {
     let snapshot = build_snapshot(app);
     let _ = app.emit_all("pomodoro://state", snapshot);
+    update_tray_menu(app);
 }
 
 fn current_quote(persistent: &PersistentState) -> Quote {
@@ -695,15 +738,40 @@ fn main() {
             let tray_app = app_handle.clone();
             let tray = SystemTray::new()
                 .with_icon(tray_icon())
-                .with_menu(
-                    SystemTrayMenu::new()
-                        .add_item(CustomMenuItem::new("show".to_string(), "显示主窗口"))
-                        .add_item(CustomMenuItem::new("quit".to_string(), "退出")),
-                )
+                .with_menu(build_tray_menu(Phase::Idle, 0, false))
                 .with_tooltip("Focus Lock")
                 .on_event(move |event| match event {
                     SystemTrayEvent::LeftClick { .. } => show_main_window(&tray_app),
                     SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
+                        "start" => {
+                            let state = tray_app.state::<AppState>();
+                            let (focus_min, break_min) = {
+                                let p = state.persistent.lock().unwrap();
+                                (p.settings.focus_minutes, p.settings.break_minutes)
+                            };
+                            let _ = begin_focus(&tray_app, focus_min, break_min);
+                        }
+                        "pause" => {
+                            let state = tray_app.state::<AppState>();
+                            let mut runtime = state.runtime.lock().unwrap();
+                            if runtime.phase == Phase::Focus {
+                                runtime.paused = true;
+                                drop(runtime);
+                                emit_snapshot(&tray_app);
+                            }
+                        }
+                        "resume" => {
+                            let state = tray_app.state::<AppState>();
+                            let mut runtime = state.runtime.lock().unwrap();
+                            if runtime.phase == Phase::Focus {
+                                runtime.paused = false;
+                                runtime.last_tick = Instant::now();
+                                drop(runtime);
+                                emit_snapshot(&tray_app);
+                            }
+                        }
+                        "cancel" => transition_to_idle(&tray_app),
+                        "end_break" => transition_to_idle(&tray_app),
                         "show" => show_main_window(&tray_app),
                         "quit" => {
                             close_lock_windows(&tray_app);
