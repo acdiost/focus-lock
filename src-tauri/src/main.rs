@@ -407,9 +407,8 @@ fn begin_focus(app: &AppHandle, focus_minutes: u64, break_minutes: u64) -> tauri
         runtime.paused = false;
         runtime.last_tick = Instant::now();
     }
-    let snapshot = build_snapshot(app);
-    let _ = app.emit_all("pomodoro://state", snapshot.clone());
-    Ok(snapshot)
+    emit_snapshot(app);
+    Ok(build_snapshot(app))
 }
 
 fn transition_to_break(app: &AppHandle) {
