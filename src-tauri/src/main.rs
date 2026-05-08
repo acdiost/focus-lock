@@ -543,6 +543,10 @@ fn macos_lock_end(app: &AppHandle) {
 fn macos_lock_end(_app: &AppHandle) {}
 
 fn close_lock_windows(app: &AppHandle) {
+    // Set flag before dispatching close calls so the CloseRequested handler allows them.
+    // The flag is intentionally NOT reset here — callers either change the phase
+    // immediately after (making the flag irrelevant) or reset it themselves
+    // (sync_lock_windows resets it before creating new break windows).
     {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
@@ -562,15 +566,18 @@ fn close_lock_windows(app: &AppHandle) {
         }
     }
 
-    let state = app.state::<AppState>();
-    let mut runtime = state.runtime.lock().unwrap();
-    runtime.allow_lock_close = false;
-
     macos_lock_end(app);
 }
 
 fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
     close_lock_windows(app);
+
+    // Reset flag now that old windows are being closed — new windows must not be closeable.
+    {
+        let state = app.state::<AppState>();
+        let mut runtime = state.runtime.lock().unwrap();
+        runtime.allow_lock_close = false;
+    }
 
     let Some(main_window) = app.get_window("main") else {
         return Ok(());
@@ -605,7 +612,19 @@ async fn refresh_online_quote(app: AppHandle) {
     let should_fetch = {
         let state = app.state::<AppState>();
         let persistent = state.persistent.lock().unwrap();
-        persistent.settings.enable_online_quote
+        if !persistent.settings.enable_online_quote {
+            false
+        } else {
+            // Skip if cache is less than 24 hours old.
+            let cache_fresh = persistent
+                .quote_cache
+                .as_ref()
+                .and_then(|q| q.fetched_at.as_deref())
+                .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                .map(|fetched| Local::now().signed_duration_since(fetched).num_hours() < 24)
+                .unwrap_or(false);
+            !cache_fresh
+        }
     };
 
     if !should_fetch {
@@ -941,14 +960,6 @@ fn cancel_pomodoro(app: AppHandle) -> Snapshot {
 }
 
 #[tauri::command]
-fn get_today_tasks(app: AppHandle) -> Vec<String> {
-    let state = app.state::<AppState>();
-    let mut persistent = state.persistent.lock().unwrap();
-    ensure_today_fresh(&mut persistent);
-    persistent.today_tasks.clone()
-}
-
-#[tauri::command]
 fn set_today_tasks(app: AppHandle, tasks: Vec<String>) -> Result<Vec<String>, String> {
     if tasks.len() > 3 {
         return Err("今日重要事项最多 3 件".to_string());
@@ -1017,19 +1028,6 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
     apply_launch_at_login(saved.launch_on_login);
     emit_snapshot(&app);
     Ok(saved)
-}
-
-#[tauri::command]
-fn enter_break_lock(app: AppHandle) -> Snapshot {
-    {
-        let state = app.state::<AppState>();
-        let runtime = state.runtime.lock().unwrap();
-        if runtime.phase != Phase::Idle {
-            return build_snapshot(&app);
-        }
-    }
-    transition_to_break(&app);
-    build_snapshot(&app)
 }
 
 #[tauri::command]
@@ -1143,12 +1141,10 @@ fn main() {
             pause_pomodoro,
             resume_pomodoro,
             cancel_pomodoro,
-            get_today_tasks,
             set_today_tasks,
             set_task_status,
             get_settings,
             save_settings,
-            enter_break_lock,
             exit_break_lock,
         ])
         .build(tauri::generate_context!())

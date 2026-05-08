@@ -50,7 +50,7 @@ const STRINGS = {
     reminderStand: "站立",
     reminderEye: "远眺",
     reminderShoulder: "放松肩颈",
-    aboutVersion: "版本 0.1.0",
+    aboutVersionPrefix: "版本",
     aboutDesc: "番茄时钟 + 休息强制锁定<br>工作时专注，休息时强制离开屏幕。",
     aboutGithub: "在 GitHub 上查看源码",
     lockTag: "休息时间",
@@ -62,6 +62,7 @@ const STRINGS = {
     waterReminder: "现在去喝一杯水，让眼睛离开屏幕。",
     standReminder: "站起来活动一下，肩颈和腿部都需要切换姿势。",
     defaultReminder: "休息几分钟，不要继续坐在屏幕前。",
+    toggleStatus: "切换状态",
     errSaveSettings: (e) => `保存设置失败：${e}`,
     errSaveTasks: (e) => `保存事项失败：${e}`,
     errStart: (e) => `启动失败：${e}`,
@@ -107,7 +108,7 @@ const STRINGS = {
     reminderStand: "Stand",
     reminderEye: "Look away",
     reminderShoulder: "Stretch",
-    aboutVersion: "Version 0.1.0",
+    aboutVersionPrefix: "Version",
     aboutDesc:
       "Pomodoro timer + forced break lock<br>Stay focused at work, step away during breaks.",
     aboutGithub: "View source on GitHub",
@@ -120,6 +121,7 @@ const STRINGS = {
     waterReminder: "Drink a glass of water and look away from the screen.",
     standReminder: "Stand up and move — your neck, shoulders and legs need a reset.",
     defaultReminder: "Rest for a few minutes. Step away from the screen.",
+    toggleStatus: "Toggle status",
     errSaveSettings: (e) => `Failed to save settings: ${e}`,
     errSaveTasks: (e) => `Failed to save tasks: ${e}`,
     errStart: (e) => `Failed to start: ${e}`,
@@ -135,6 +137,7 @@ const state = {
   reminderIndex: 0,
   reminderTimer: null,
   lang: "zh",
+  appVersion: "",
 };
 
 let T = STRINGS.zh;
@@ -202,6 +205,14 @@ function applyI18n() {
     const val = T[el.dataset.i18nHtml];
     if (val !== undefined) el.innerHTML = val;
   });
+  document.querySelectorAll("[data-i18n-title]").forEach((el) => {
+    const val = T[el.dataset.i18nTitle];
+    if (val !== undefined) el.title = val;
+  });
+  const versionEl = document.querySelector(".about-version");
+  if (versionEl && state.appVersion) {
+    versionEl.textContent = `${T.aboutVersionPrefix} ${state.appVersion}`;
+  }
   if (!isLockView && els.taskInputs[0]) {
     els.taskInputs.forEach((input, i) => {
       input.placeholder = T.taskPlaceholder(i);
@@ -461,6 +472,13 @@ async function init() {
 
   // Apply system language immediately to avoid a flash of untranslated content.
   setLang(navigator.language.startsWith("zh") ? "zh" : "en");
+
+  // Fetch the authoritative version string from Tauri so the about dialog stays
+  // in sync with Cargo.toml without requiring manual edits to the i18n strings.
+  try {
+    state.appVersion = await tauri.app.getVersion();
+    applyI18n();
+  } catch (_) {}
 
   bindEvents();
   await loadSnapshot();
