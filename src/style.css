@@ -45,7 +45,7 @@ button {
   border-radius: 10px;
   padding: 0.58rem 1.1rem;
   cursor: pointer;
-  font-size: 0.875rem;
+  font-size: 0.9rem;
   font-weight: 500;
   line-height: 1.4;
   white-space: nowrap;
@@ -102,7 +102,7 @@ input[type="number"] {
   background: var(--surface);
   color: var(--text);
   outline: none;
-  font-size: 0.9rem;
+  font-size: 0.95rem;
   transition: border-color 150ms, box-shadow 150ms;
 }
 
@@ -138,19 +138,19 @@ input[type="checkbox"] {
 }
 
 .app-title {
-  font-size: 0.95rem;
+  font-size: 1rem;
   font-weight: 700;
   letter-spacing: -0.01em;
 }
 
 .app-desc {
-  font-size: 0.8rem;
+  font-size: 0.86rem;
   color: var(--muted);
   flex: 1;
 }
 
 .about-btn {
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   padding: 0.28rem 0.7rem;
   border-radius: 999px;
   background: transparent;
@@ -224,13 +224,13 @@ input[type="checkbox"] {
 }
 
 .about-version {
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   color: var(--muted);
   margin-bottom: 14px;
 }
 
 .about-desc {
-  font-size: 0.84rem;
+  font-size: 0.88rem;
   color: var(--text-2);
   line-height: 1.65;
   margin-bottom: 0;
@@ -244,7 +244,7 @@ input[type="checkbox"] {
 }
 
 .about-link {
-  font-size: 0.84rem;
+  font-size: 0.88rem;
   padding: 0.5rem 1rem;
   border-radius: 10px;
   background: var(--bg);
@@ -255,7 +255,7 @@ input[type="checkbox"] {
 }
 
 .about-author {
-  font-size: 0.74rem;
+  font-size: 0.78rem;
   color: var(--muted);
 }
 
@@ -288,7 +288,7 @@ input[type="checkbox"] {
   display: inline-block;
   padding: 0.26rem 0.7rem;
   border-radius: 999px;
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   font-weight: 600;
   letter-spacing: 0.01em;
   background: var(--accent-bg);
@@ -296,7 +296,7 @@ input[type="checkbox"] {
 }
 
 #cycle-text {
-  font-size: 0.8rem;
+  font-size: 0.86rem;
   color: var(--muted);
 }
 
@@ -310,14 +310,14 @@ input[type="checkbox"] {
 }
 
 #status-text {
-  font-size: 0.84rem;
+  font-size: 0.9rem;
   color: var(--muted);
   margin-bottom: 5px;
   min-height: 1.2em;
 }
 
 #quote-inline {
-  font-size: 0.8rem;
+  font-size: 0.86rem;
   color: var(--muted);
   font-style: italic;
   margin-bottom: 22px;
@@ -348,7 +348,7 @@ input[type="checkbox"] {
 }
 
 .side-label {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -356,7 +356,7 @@ input[type="checkbox"] {
 }
 
 #quote-card {
-  font-size: 0.95rem;
+  font-size: 1rem;
   color: var(--text-2);
   line-height: 1.72;
   white-space: pre-line;
@@ -374,14 +374,14 @@ input[type="checkbox"] {
 .reminder-band span {
   padding: 0.24rem 0.62rem;
   border-radius: 999px;
-  font-size: 0.74rem;
+  font-size: 0.8rem;
   font-weight: 500;
   background: var(--green-bg);
   color: var(--green);
 }
 
 .side-note {
-  font-size: 0.77rem;
+  font-size: 0.83rem;
   color: var(--muted);
   line-height: 1.55;
   padding-top: 14px;
@@ -411,14 +411,14 @@ input[type="checkbox"] {
 }
 
 .panel-head h2 {
-  font-size: 0.88rem;
+  font-size: 0.96rem;
   font-weight: 600;
   color: var(--text);
   margin-bottom: 3px;
 }
 
 .panel-head p {
-  font-size: 0.76rem;
+  font-size: 0.82rem;
   color: var(--muted);
 }
 
@@ -426,35 +426,39 @@ input[type="checkbox"] {
 
 .field-grid {
   display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .field-grid label span {
   display: block;
-  font-size: 0.77rem;
+  font-size: 0.83rem;
   font-weight: 500;
   color: var(--muted);
-  margin-bottom: 5px;
+  margin-bottom: 6px;
 }
 
 .toggle-list {
   display: grid;
-  gap: 9px;
-  margin-bottom: 16px;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 14px;
+  row-gap: 12px;
+  margin-bottom: 18px;
 }
 
 .toggle {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 0.85rem;
+  font-size: 0.92rem;
   cursor: pointer;
   user-select: none;
 }
 
 .toggle span {
   color: var(--text-2);
+  line-height: 1.35;
 }
 
 /* Tasks */
@@ -533,7 +537,7 @@ input[type="checkbox"] {
 }
 
 .lock-tag {
-  font-size: 0.72rem;
+  font-size: 0.76rem;
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -551,7 +555,7 @@ input[type="checkbox"] {
 }
 
 #lock-status {
-  font-size: 0.92rem;
+  font-size: 0.96rem;
   color: var(--muted);
   margin-bottom: 28px;
 }
@@ -571,7 +575,7 @@ input[type="checkbox"] {
 }
 
 .lock-panel h2 {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -586,7 +590,7 @@ input[type="checkbox"] {
 }
 
 #lock-tasks li {
-  font-size: 0.95rem;
+  font-size: 1rem;
   color: var(--text);
   padding-left: 14px;
   position: relative;
@@ -620,7 +624,7 @@ input[type="checkbox"] {
 }
 
 #lock-quote {
-  font-size: 0.93rem;
+  font-size: 0.98rem;
   color: var(--text-2);
   line-height: 1.65;
   white-space: pre-line;
@@ -629,7 +633,7 @@ input[type="checkbox"] {
 }
 
 #lock-reminder {
-  font-size: 0.84rem;
+  font-size: 0.9rem;
   color: var(--accent);
   font-weight: 500;
 }
@@ -643,7 +647,7 @@ input[type="checkbox"] {
   color: rgba(26, 29, 35, 0.28);
   border: 1px solid rgba(26, 29, 35, 0.15);
   border-radius: 999px;
-  font-size: 0.78rem;
+  font-size: 0.83rem;
   padding: 0.38rem 1.1rem;
   letter-spacing: 0.01em;
   box-shadow: none;
