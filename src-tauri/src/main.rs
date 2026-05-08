@@ -263,6 +263,7 @@ fn build_tray_menu(phase: Phase, remaining: u64, paused: bool) -> SystemTrayMenu
 
     menu.add_native_item(SystemTrayMenuItem::Separator)
         .add_item(CustomMenuItem::new("show", "显示主窗口"))
+        .add_item(CustomMenuItem::new("about", "关于 Focus Lock"))
         .add_native_item(SystemTrayMenuItem::Separator)
         .add_item(CustomMenuItem::new("quit", "退出"))
 }
@@ -772,6 +773,10 @@ fn main() {
                         "cancel" => transition_to_idle(&tray_app),
                         "end_break" => transition_to_idle(&tray_app),
                         "show" => show_main_window(&tray_app),
+                        "about" => {
+                            show_main_window(&tray_app);
+                            let _ = tray_app.emit_all("open://about", ());
+                        }
                         "quit" => {
                             close_lock_windows(&tray_app);
                             std::process::exit(0);

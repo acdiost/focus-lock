@@ -6,6 +6,7 @@ if (!tauri) {
 
 const { invoke } = tauri.tauri;
 const { listen } = tauri.event;
+const { open: shellOpen } = tauri.shell;
 
 const state = {
   snapshot: null,
@@ -196,6 +197,14 @@ function bindEvents() {
     });
     els.saveSettingsBtn.addEventListener("click", saveSettings);
     els.saveTasksBtn.addEventListener("click", saveTasks);
+
+    const dialog = document.getElementById("about-dialog");
+    document.getElementById("about-btn").addEventListener("click", () => dialog.showModal());
+    document.getElementById("about-close").addEventListener("click", () => dialog.close());
+    document.getElementById("about-github").addEventListener("click", () =>
+      shellOpen("https://github.com/acdiost/focus-lock/")
+    );
+    dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
   } else {
     window.addEventListener("keydown", (event) => {
       if (["Escape", "F4"].includes(event.key) || event.metaKey || event.altKey) {
@@ -229,6 +238,11 @@ async function init() {
   await listen("pomodoro://state", (event) => {
     render(event.payload);
   });
+  if (!isLockView) {
+    await listen("open://about", () => {
+      document.getElementById("about-dialog").showModal();
+    });
+  }
 }
 
 init().catch((error) => {
