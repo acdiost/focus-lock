@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    collections::HashSet,
     fs,
     path::PathBuf,
     sync::Mutex,
@@ -454,13 +453,6 @@ fn tick_runtime(app: &AppHandle) {
     }
 }
 
-fn focus_lock_window_labels(app: &AppHandle) -> HashSet<String> {
-    app.windows()
-        .keys()
-        .filter(|label| label.starts_with(LOCK_PREFIX))
-        .cloned()
-        .collect()
-}
 
 fn is_break_active(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
@@ -504,21 +496,23 @@ fn tray_icon() -> Icon {
 fn handle_lock_window_event(event: GlobalWindowEvent) {
     let window = event.window();
     let app = window.app_handle();
-    let lock_labels = focus_lock_window_labels(&app);
-    if !lock_labels.contains(window.label()) {
-        return;
-    }
+    let label = window.label();
 
     match event.event() {
         WindowEvent::CloseRequested { api, .. } => {
-            let state = app.state::<AppState>();
-            let runtime = state.runtime.lock().unwrap();
-            if runtime.phase == Phase::Break && !runtime.allow_lock_close {
+            if label == "main" {
                 api.prevent_close();
+                let _ = window.hide();
+            } else if label.starts_with(LOCK_PREFIX) {
+                let state = app.state::<AppState>();
+                let runtime = state.runtime.lock().unwrap();
+                if runtime.phase == Phase::Break && !runtime.allow_lock_close {
+                    api.prevent_close();
+                }
             }
         }
         WindowEvent::Focused(false) => {
-            if is_break_active(&app) {
+            if label.starts_with(LOCK_PREFIX) && is_break_active(&app) {
                 let _ = window.show();
                 let _ = window.set_always_on_top(true);
                 let _ = window.set_focus();
