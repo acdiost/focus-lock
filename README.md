@@ -1,6 +1,6 @@
 # Focus Lock
 
-番茄时钟 + 休息强制锁屏桌面应用，支持 macOS 和 Windows。
+番茄时钟 + 休息强制锁屏桌面应用，支持 macOS、Windows 和 Linux。
 
 工作阶段正常计时；休息阶段在**所有显示器**上覆盖全屏锁定层，隐藏菜单栏与 Dock，展示今日重要事项、一言和健康提醒，防止分心继续工作。
 
@@ -20,9 +20,9 @@
 
 ## 截图
 
-| 主界面 | 休息锁屏 |
-|--------|---------|
-| _(待补充)_ | _(待补充)_ |
+主界面
+
+![主界面](focuslock.png)
 
 ## 系统要求
 
@@ -30,12 +30,13 @@
 |------|---------|
 | macOS | 10.15 Catalina |
 | Windows | 10 |
+| Linux | GTK 3 + WebKitGTK 4.0（Ubuntu 20.04 / Fedora 35+） |
 
 ---
 
 ## 安装
 
-### 下载 DMG（macOS）
+### macOS（DMG）
 
 从 [Releases](https://github.com/acdiost/focus-lock/releases) 页面下载最新的 `.dmg` 文件：
 
@@ -46,6 +47,25 @@
 
 > **首次打开提示**：由于应用未经 Apple 公证，macOS 会提示"无法验证开发者"。
 > 在 Finder 中右键点击应用 → **打开** → 再次点击**打开**即可，此后正常双击运行。
+
+### Linux（AppImage / deb）
+
+从 [Releases](https://github.com/acdiost/focus-lock/releases) 页面下载对应格式：
+
+**AppImage**（通用，无需安装）：
+
+```bash
+chmod +x focus-lock_x.x.x_amd64.AppImage
+./focus-lock_x.x.x_amd64.AppImage
+```
+
+**deb 包**（Debian / Ubuntu）：
+
+```bash
+sudo dpkg -i focus-lock_x.x.x_amd64.deb
+```
+
+> Linux 版本要求系统已安装 `libwebkit2gtk-4.0-37`、`libgtk-3-0` 和 `libayatana-appindicator3-1`（托盘支持）。Ubuntu 22.04+ 通常已自带前两者；托盘库可通过 `sudo apt install libayatana-appindicator3-1` 安装。
 
 ---
 
@@ -59,6 +79,21 @@
 | [Rust](https://rustup.rs/) stable 1.77+ | 后端编译 |
 | Xcode Command Line Tools | 仅 macOS，`xcode-select --install` |
 | WebView2 + MSVC 构建工具 | 仅 Windows |
+| GTK 3 / WebKitGTK / AppIndicator | 仅 Linux，见下方说明 |
+
+**Linux 构建依赖**（Ubuntu / Debian）：
+
+```bash
+sudo apt install libwebkit2gtk-4.0-dev libgtk-3-dev \
+  libayatana-appindicator3-dev librsvg2-dev patchelf
+```
+
+Fedora / RHEL：
+
+```bash
+sudo dnf install webkit2gtk4.0-devel gtk3-devel \
+  libayatana-appindicator-gtk3-devel librsvg2-devel patchelf
+```
 
 ### 快速开始
 
@@ -102,6 +137,8 @@ npm run build
 |------|------|
 | macOS | `src-tauri/target/release/bundle/dmg/Focus Lock_x.x.x_aarch64.dmg` |
 | Windows | `src-tauri/target/release/bundle/msi/Focus Lock_x.x.x_x64_en-US.msi` |
+| Linux | `src-tauri/target/release/bundle/appimage/focus-lock_x.x.x_amd64.AppImage` |
+| Linux | `src-tauri/target/release/bundle/deb/focus-lock_x.x.x_amd64.deb` |
 
 > 托盘支持通过 Cargo feature `tray` 开启，已内置于 npm 脚本，无需手动传参。
 
@@ -152,7 +189,7 @@ focus-lock/
 
 - 应用级锁定，非系统级锁屏。macOS 已通过提升窗口层级和隐藏菜单栏缓解，但用户在极端操作下仍可能切出
 - 多屏热插拔不会动态更新锁屏窗口，需要等待当轮休息结束或手动取消后重新触发
-- 开机自启动功能预留了设置项，尚未实现平台级注册
+- Linux 上的全屏锁定效果依赖窗口管理器行为，部分平台（如 i3/Sway）可能无法完全阻止切换
 - Windows 未配置代码签名，安装时 SmartScreen 可能弹出警告
 
 ---

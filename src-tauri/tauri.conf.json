@@ -25,7 +25,7 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
-      "targets": ["dmg"],
+      "targets": "all",
       "category": "Productivity",
       "shortDescription": "Pomodoro timer with break-time screen lock",
       "longDescription": "Focus Lock is a Pomodoro timer that covers all displays during breaks, helping you take proper rest and stay focused.",
@@ -36,6 +36,13 @@
         "signingIdentity": null,
         "entitlements": null,
         "hardenedRuntime": false
+      },
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.0-37",
+          "libayatana-appindicator3-1",
+          "libgtk-3-0"
+        ]
       },
       "dmg": {
         "windowSize": {

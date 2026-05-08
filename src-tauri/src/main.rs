@@ -360,7 +360,34 @@ fn apply_launch_at_login(enable: bool) {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn apply_launch_at_login(enable: bool) {
+    let Some(home) = std::env::var("HOME").ok() else { return };
+    let autostart_dir = std::path::PathBuf::from(home).join(".config/autostart");
+    let desktop_path = autostart_dir.join("com.acdiost.focuslock.desktop");
+
+    if enable {
+        let Ok(exe) = std::env::current_exe() else { return };
+        let exe_str = exe.to_string_lossy();
+        let content = format!(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Focus Lock\n\
+             Comment=Pomodoro timer with break-time screen lock\n\
+             Exec={exe_str}\n\
+             Icon=com.acdiost.focuslock\n\
+             Hidden=false\n\
+             NoDisplay=false\n\
+             X-GNOME-Autostart-enabled=true\n"
+        );
+        let _ = fs::create_dir_all(&autostart_dir);
+        let _ = fs::write(&desktop_path, content);
+    } else {
+        let _ = fs::remove_file(&desktop_path);
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn apply_launch_at_login(_enable: bool) {}
 
 fn current_quote(persistent: &PersistentState) -> Quote {
