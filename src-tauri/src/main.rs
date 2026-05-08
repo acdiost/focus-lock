@@ -31,6 +31,8 @@ struct Settings {
     enable_water_reminder: bool,
     enable_stand_reminder: bool,
     auto_restart: bool,
+    #[serde(default)]
+    launch_on_login: bool,
 }
 
 impl Default for Settings {
@@ -42,6 +44,7 @@ impl Default for Settings {
             enable_water_reminder: true,
             enable_stand_reminder: true,
             auto_restart: false,
+            launch_on_login: false,
         }
     }
 }
@@ -291,6 +294,69 @@ fn emit_snapshot(app: &AppHandle) {
     let _ = app.emit_all("pomodoro://state", snapshot);
     update_tray_menu(app);
 }
+
+// ── Launch at login ─────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+fn apply_launch_at_login(enable: bool) {
+    let Some(home) = std::env::var("HOME").ok() else { return };
+    let plist_path = std::path::PathBuf::from(home)
+        .join("Library/LaunchAgents/com.acdiost.focuslock.plist");
+
+    if enable {
+        let Ok(exe) = std::env::current_exe() else { return };
+        let exe_str = exe.to_string_lossy();
+        let plist = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+             \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+             <plist version=\"1.0\">\n\
+             <dict>\n\
+             \t<key>Label</key>\n\
+             \t<string>com.acdiost.focuslock</string>\n\
+             \t<key>ProgramArguments</key>\n\
+             \t<array>\n\
+             \t\t<string>{exe_str}</string>\n\
+             \t</array>\n\
+             \t<key>RunAtLoad</key>\n\
+             \t<true/>\n\
+             \t<key>KeepAlive</key>\n\
+             \t<false/>\n\
+             </dict>\n\
+             </plist>\n"
+        );
+        if let Some(dir) = plist_path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let _ = fs::write(&plist_path, plist);
+    } else {
+        let _ = fs::remove_file(&plist_path);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_launch_at_login(enable: bool) {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+    use winreg::RegKey;
+
+    let Ok(run_key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(
+        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+        KEY_SET_VALUE,
+    ) else {
+        return;
+    };
+
+    if enable {
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = run_key.set_value("Focus Lock", &exe.to_string_lossy().as_ref());
+        }
+    } else {
+        let _ = run_key.delete_value("Focus Lock");
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn apply_launch_at_login(_enable: bool) {}
 
 fn current_quote(persistent: &PersistentState) -> Quote {
     persistent
@@ -802,9 +868,11 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
         persistent.settings.enable_water_reminder = settings.enable_water_reminder;
         persistent.settings.enable_stand_reminder = settings.enable_stand_reminder;
         persistent.settings.auto_restart = settings.auto_restart;
+        persistent.settings.launch_on_login = settings.launch_on_login;
         persist_state(&app, &persistent).map_err(|err| err.to_string())?;
         persistent.settings.clone()
     };
+    apply_launch_at_login(saved.launch_on_login);
     emit_snapshot(&app);
     Ok(saved)
 }
@@ -927,6 +995,13 @@ fn main() {
         .expect("failed to build tauri application")
         .run(|app, event| {
             if let RunEvent::Ready = event {
+                // Sync launch-at-login plist / registry with saved setting.
+                let launch = {
+                    let state = app.state::<AppState>();
+                    let persistent = state.persistent.lock().unwrap();
+                    persistent.settings.launch_on_login
+                };
+                apply_launch_at_login(launch);
                 emit_snapshot(app);
             }
         });

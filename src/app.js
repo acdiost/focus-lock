@@ -29,6 +29,7 @@ const els = {
   waterReminder: document.querySelector("#water-reminder"),
   standReminder: document.querySelector("#stand-reminder"),
   autoRestart: document.querySelector("#auto-restart"),
+  launchOnLogin: document.querySelector("#launch-on-login"),
   taskInputs: [0, 1, 2].map((index) => document.querySelector(`#task-${index}`)),
   statusBtns: [0, 1, 2].map((index) => document.querySelector(`.status-btn[data-index="${index}"]`)),
   startBtn: document.querySelector("#start-btn"),
@@ -95,6 +96,7 @@ function applySettings(snapshot) {
   els.waterReminder.checked = snapshot.settings.enableWaterReminder;
   els.standReminder.checked = snapshot.settings.enableStandReminder;
   els.autoRestart.checked = snapshot.settings.autoRestart;
+  els.launchOnLogin.checked = snapshot.settings.launchOnLogin;
 }
 
 const STATUS_CYCLE = { none: "doing", doing: "done", done: "none" };
@@ -172,7 +174,8 @@ async function saveSettings() {
       enableOnlineQuote: els.onlineQuote.checked,
       enableWaterReminder: els.waterReminder.checked,
       enableStandReminder: els.standReminder.checked,
-      autoRestart: els.autoRestart.checked
+      autoRestart: els.autoRestart.checked,
+      launchOnLogin: els.launchOnLogin.checked
     };
     await invoke("save_settings", { settings });
   } catch (err) {
