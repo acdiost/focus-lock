@@ -256,17 +256,55 @@ fn format_duration_tray(secs: u64) -> String {
     format!("{:02}:{:02}", secs / 60, secs % 60)
 }
 
-fn build_tray_menu(phase: Phase, remaining: u64, paused: bool) -> SystemTrayMenu {
+fn build_tray_menu(
+    phase: Phase,
+    remaining: u64,
+    paused: bool,
+    cycles: u32,
+    force_break: bool,
+    tasks: &[(String, String)],
+) -> SystemTrayMenu {
+    let cycle_suffix = if cycles > 0 {
+        format!(" · 今日 {} 轮", cycles)
+    } else {
+        String::new()
+    };
     let status = match phase {
-        Phase::Idle => "Focus Lock · 待机".to_string(),
-        Phase::Focus if paused => format!("专注暂停 · {}", format_duration_tray(remaining)),
-        Phase::Focus => format!("专注中 · {}", format_duration_tray(remaining)),
-        Phase::Break => format!("休息中 · {}", format_duration_tray(remaining)),
+        Phase::Idle => format!("Focus Lock · 待机{}", cycle_suffix),
+        Phase::Focus if paused => {
+            format!("专注暂停 · {}{}", format_duration_tray(remaining), cycle_suffix)
+        }
+        Phase::Focus => format!("专注中 · {}{}", format_duration_tray(remaining), cycle_suffix),
+        Phase::Break => format!("休息中 · {}{}", format_duration_tray(remaining), cycle_suffix),
     };
 
     let mut menu = SystemTrayMenu::new()
         .add_item(CustomMenuItem::new("status", status).disabled())
         .add_native_item(SystemTrayMenuItem::Separator);
+
+    // Today's tasks — shown as read-only context items
+    let filled: Vec<_> = tasks.iter().filter(|(text, _)| !text.is_empty()).collect();
+    if !filled.is_empty() {
+        for (i, (text, status_str)) in filled.iter().enumerate() {
+            let icon = match status_str.as_str() {
+                "doing" => "▶",
+                "done"  => "✓",
+                _       => "○",
+            };
+            let chars_count = text.chars().count();
+            let label_text: String = text.chars().take(16).collect();
+            let label_text = if chars_count > 16 {
+                format!("{}…", label_text)
+            } else {
+                label_text
+            };
+            menu = menu.add_item(
+                CustomMenuItem::new(format!("task_{}", i), format!("{} {}", icon, label_text))
+                    .disabled(),
+            );
+        }
+        menu = menu.add_native_item(SystemTrayMenuItem::Separator);
+    }
 
     menu = match phase {
         Phase::Idle => menu.add_item(CustomMenuItem::new("start", "开始番茄")),
@@ -274,9 +312,12 @@ fn build_tray_menu(phase: Phase, remaining: u64, paused: bool) -> SystemTrayMenu
             .add_item(CustomMenuItem::new("resume", "继续专注"))
             .add_item(CustomMenuItem::new("cancel", "取消本轮")),
         Phase::Focus => menu
-            .add_item(CustomMenuItem::new("pause", "暂停"))
+            .add_item(CustomMenuItem::new("pause", "暂停专注"))
             .add_item(CustomMenuItem::new("cancel", "取消本轮")),
-        Phase::Break => menu.add_item(CustomMenuItem::new("end_break", "提前结束休息")),
+        Phase::Break if !force_break => {
+            menu.add_item(CustomMenuItem::new("end_break", "提前结束休息"))
+        }
+        Phase::Break => menu,
     };
 
     menu.add_native_item(SystemTrayMenuItem::Separator)
@@ -288,9 +329,21 @@ fn build_tray_menu(phase: Phase, remaining: u64, paused: bool) -> SystemTrayMenu
 
 fn update_tray_menu(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let runtime = state.runtime.lock().unwrap();
-    let menu = build_tray_menu(runtime.phase, runtime.remaining_seconds, runtime.paused);
-    drop(runtime);
+    let (phase, remaining, paused) = {
+        let r = state.runtime.lock().unwrap();
+        (r.phase, r.remaining_seconds, r.paused)
+    };
+    let (cycles, force_break, tasks) = {
+        let p = state.persistent.lock().unwrap();
+        let tasks: Vec<(String, String)> = p
+            .today_tasks
+            .iter()
+            .zip(p.task_statuses.iter())
+            .map(|(t, s)| (t.clone(), s.clone()))
+            .collect();
+        (p.completed_cycles, p.settings.force_break, tasks)
+    };
+    let menu = build_tray_menu(phase, remaining, paused, cycles, force_break, &tasks);
     let _ = app.tray_handle().set_menu(menu);
 }
 
@@ -956,7 +1009,7 @@ fn main() {
             let tray_app = app_handle.clone();
             let tray = SystemTray::new()
                 .with_icon(tray_icon())
-                .with_menu(build_tray_menu(Phase::Idle, 0, false))
+                .with_menu(build_tray_menu(Phase::Idle, 0, false, 0, true, &[]))
                 .with_tooltip("Focus Lock")
                 .on_event(move |event| match event {
                     SystemTrayEvent::LeftClick { .. } => show_main_window(&tray_app),
