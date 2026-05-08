@@ -634,6 +634,28 @@ input[type="checkbox"] {
   font-weight: 500;
 }
 
+/* ── End-break button ──────────────────────────────── */
+
+.end-break-btn {
+  display: block;
+  margin: 20px auto 0;
+  background: transparent;
+  color: rgba(26, 29, 35, 0.28);
+  border: 1px solid rgba(26, 29, 35, 0.15);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  padding: 0.38rem 1.1rem;
+  letter-spacing: 0.01em;
+  box-shadow: none;
+  transition: color 150ms, border-color 150ms;
+}
+
+.end-break-btn:not(:disabled):hover {
+  color: rgba(26, 29, 35, 0.6);
+  border-color: rgba(26, 29, 35, 0.35);
+  opacity: 1;
+}
+
 /* ── Responsive ────────────────────────────────────── */
 
 @media (max-width: 960px) {

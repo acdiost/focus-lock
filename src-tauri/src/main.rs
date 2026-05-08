@@ -33,7 +33,11 @@ struct Settings {
     auto_restart: bool,
     #[serde(default)]
     launch_on_login: bool,
+    #[serde(default = "default_true")]
+    force_break: bool,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for Settings {
     fn default() -> Self {
@@ -45,6 +49,7 @@ impl Default for Settings {
             enable_stand_reminder: true,
             auto_restart: false,
             launch_on_login: false,
+            force_break: true,
         }
     }
 }
@@ -869,6 +874,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
         persistent.settings.enable_stand_reminder = settings.enable_stand_reminder;
         persistent.settings.auto_restart = settings.auto_restart;
         persistent.settings.launch_on_login = settings.launch_on_login;
+        persistent.settings.force_break = settings.force_break;
         persist_state(&app, &persistent).map_err(|err| err.to_string())?;
         persistent.settings.clone()
     };

@@ -29,7 +29,9 @@ const els = {
   waterReminder: document.querySelector("#water-reminder"),
   standReminder: document.querySelector("#stand-reminder"),
   autoRestart: document.querySelector("#auto-restart"),
+  forceBreak: document.querySelector("#force-break"),
   launchOnLogin: document.querySelector("#launch-on-login"),
+  endBreakBtn: document.querySelector("#end-break-btn"),
   taskInputs: [0, 1, 2].map((index) => document.querySelector(`#task-${index}`)),
   statusBtns: [0, 1, 2].map((index) => document.querySelector(`.status-btn[data-index="${index}"]`)),
   startBtn: document.querySelector("#start-btn"),
@@ -96,6 +98,7 @@ function applySettings(snapshot) {
   els.waterReminder.checked = snapshot.settings.enableWaterReminder;
   els.standReminder.checked = snapshot.settings.enableStandReminder;
   els.autoRestart.checked = snapshot.settings.autoRestart;
+  els.forceBreak.checked = snapshot.settings.forceBreak;
   els.launchOnLogin.checked = snapshot.settings.launchOnLogin;
 }
 
@@ -148,6 +151,7 @@ function renderLock(snapshot) {
     els.lockTasks.appendChild(li);
   });
   els.lockReminder.textContent = reminders[state.reminderIndex % reminders.length];
+  els.endBreakBtn.hidden = snapshot.settings.forceBreak !== false;
 }
 
 function render(snapshot) {
@@ -175,6 +179,7 @@ async function saveSettings() {
       enableWaterReminder: els.waterReminder.checked,
       enableStandReminder: els.standReminder.checked,
       autoRestart: els.autoRestart.checked,
+      forceBreak: els.forceBreak.checked,
       launchOnLogin: els.launchOnLogin.checked
     };
     await invoke("save_settings", { settings });
@@ -237,7 +242,15 @@ function bindEvents() {
     );
     dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
   } else {
+    els.endBreakBtn.addEventListener("click", async () => {
+      try { await invoke("exit_break_lock"); } catch (_) {}
+    });
     window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && state.snapshot?.settings.forceBreak === false) {
+        event.preventDefault();
+        invoke("exit_break_lock").catch(() => {});
+        return;
+      }
       if (["Escape", "F4"].includes(event.key) || event.metaKey || event.altKey) {
         event.preventDefault();
         event.stopPropagation();

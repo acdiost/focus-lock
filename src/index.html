@@ -90,6 +90,10 @@
               <span>休息结束后自动开始下一轮</span>
             </label>
             <label class="toggle">
+              <input id="force-break" type="checkbox" />
+              <span>强制休息（不可提前结束）</span>
+            </label>
+            <label class="toggle">
               <input id="launch-on-login" type="checkbox" />
               <span>开机自动启动</span>
             </label>
@@ -138,6 +142,7 @@
             <p id="lock-reminder"></p>
           </article>
         </div>
+        <button id="end-break-btn" class="end-break-btn" hidden>提前结束休息</button>
       </div>
     </section>
 
