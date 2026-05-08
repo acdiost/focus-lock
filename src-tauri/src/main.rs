@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![allow(unexpected_cfgs)] // objc 0.2.7 macros emit cargo-clippy cfg checks on newer Rust
 
 use std::{
     fs,
@@ -289,6 +290,45 @@ fn current_quote(persistent: &PersistentState) -> Quote {
         .unwrap_or_else(|| local_quote_for_seed(local_quote_seed()))
 }
 
+// Raise a lock window above the macOS menu bar and hide the menu bar + dock.
+// Window level 1000 = NSScreenSaverWindowLevel, above NSMainMenuWindowLevel (24).
+// Presentation flags: HideDock(2) | HideMenuBar(8) | DisableAppleMenu(16)
+//                   | DisableForceQuit(32) | DisableHideApplication(128) = 186
+#[cfg(target_os = "macos")]
+fn macos_lock_begin(app: &AppHandle, label: String) {
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || unsafe {
+        #[allow(unused_imports)]
+        use objc::{class, msg_send, sel, sel_impl};
+        use objc::runtime::Object;
+        if let Some(w) = app2.get_window(&label) {
+            if let Ok(ptr) = w.ns_window() {
+                let _: () = msg_send![ptr as *mut Object, setLevel: 1000_i64];
+            }
+        }
+        let ns_app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![ns_app, setPresentationOptions: 186_u64];
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_lock_begin(_app: &AppHandle, _label: String) {}
+
+// Reset NSApp presentation options when the break ends.
+#[cfg(target_os = "macos")]
+fn macos_lock_end(app: &AppHandle) {
+    let _ = app.run_on_main_thread(|| unsafe {
+        #[allow(unused_imports)]
+        use objc::{class, msg_send, sel, sel_impl};
+        use objc::runtime::Object;
+        let ns_app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![ns_app, setPresentationOptions: 0_u64];
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_lock_end(_app: &AppHandle) {}
+
 fn close_lock_windows(app: &AppHandle) {
     {
         let state = app.state::<AppState>();
@@ -312,6 +352,8 @@ fn close_lock_windows(app: &AppHandle) {
     let state = app.state::<AppState>();
     let mut runtime = state.runtime.lock().unwrap();
     runtime.allow_lock_close = false;
+
+    macos_lock_end(app);
 }
 
 fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
@@ -340,6 +382,7 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
         let _ = window.set_always_on_top(true);
         let _ = window.set_focus();
         let _ = window.show();
+        macos_lock_begin(app, label.clone());
     }
 
     Ok(())
