@@ -310,10 +310,7 @@ function renderLock(snapshot) {
   els.endBreakBtn.hidden = snapshot.settings.forceBreak !== false;
 }
 
-function render(snapshot) {
-  state.snapshot = snapshot;
-  const lang = effectiveLang(snapshot.settings);
-  if (state.lang !== lang) setLang(lang);
+function renderContent(snapshot) {
   if (!isLockView) {
     applySettings(snapshot);
     applyTasks(snapshot);
@@ -321,6 +318,13 @@ function render(snapshot) {
   } else {
     renderLock(snapshot);
   }
+}
+
+function render(snapshot) {
+  state.snapshot = snapshot;
+  const lang = effectiveLang(snapshot.settings);
+  if (state.lang !== lang) setLang(lang);
+  renderContent(snapshot);
 }
 
 // ── Data ───────────────────────────────────────────────────────────────────────
@@ -365,7 +369,7 @@ function bindEvents() {
     els.langBtn.addEventListener("click", async () => {
       const newLang = state.lang === "zh" ? "en" : "zh";
       setLang(newLang);
-      if (state.snapshot) render(state.snapshot);
+      if (state.snapshot) renderContent(state.snapshot);
       try {
         await invoke("save_settings", {
           settings: {

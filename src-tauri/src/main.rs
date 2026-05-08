@@ -1187,7 +1187,7 @@ mod tests {
         };
         ensure_today_fresh(&mut state);
         assert_eq!(state.today_date, today_string());
-        assert!(state.today_tasks.is_empty());
+        assert!(state.today_tasks.iter().all(|t| t.is_empty()));
         assert_eq!(state.completed_cycles, 0);
     }
 }
