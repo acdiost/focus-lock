@@ -149,7 +149,8 @@ input[type="checkbox"] {
   flex: 1;
 }
 
-.about-btn {
+.about-btn,
+.lang-btn {
   font-size: 0.82rem;
   padding: 0.28rem 0.7rem;
   border-radius: 999px;

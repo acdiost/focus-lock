@@ -35,6 +35,8 @@ struct Settings {
     launch_on_login: bool,
     #[serde(default = "default_true")]
     force_break: bool,
+    #[serde(default)]
+    language: String, // "zh" | "en" | "" (empty = auto-detect on frontend)
 }
 
 fn default_true() -> bool { true }
@@ -50,6 +52,7 @@ impl Default for Settings {
             auto_restart: false,
             launch_on_login: false,
             force_break: true,
+            language: String::new(),
         }
     }
 }
@@ -263,19 +266,45 @@ fn build_tray_menu(
     cycles: u32,
     force_break: bool,
     tasks: &[(String, String)],
+    lang: &str,
 ) -> SystemTrayMenu {
+    let en = lang == "en";
+
     let cycle_suffix = if cycles > 0 {
-        format!(" · 今日 {} 轮", cycles)
+        if en {
+            let unit = if cycles == 1 { "round" } else { "rounds" };
+            format!(" · Today: {} {}", cycles, unit)
+        } else {
+            format!(" · 今日 {} 轮", cycles)
+        }
     } else {
         String::new()
     };
+
     let status = match phase {
-        Phase::Idle => format!("Focus Lock · 待机{}", cycle_suffix),
-        Phase::Focus if paused => {
-            format!("专注暂停 · {}{}", format_duration_tray(remaining), cycle_suffix)
-        }
-        Phase::Focus => format!("专注中 · {}{}", format_duration_tray(remaining), cycle_suffix),
-        Phase::Break => format!("休息中 · {}{}", format_duration_tray(remaining), cycle_suffix),
+        Phase::Idle => format!(
+            "Focus Lock · {}{}",
+            if en { "Idle" } else { "待机" },
+            cycle_suffix
+        ),
+        Phase::Focus if paused => format!(
+            "{} · {}{}",
+            if en { "Paused" } else { "专注暂停" },
+            format_duration_tray(remaining),
+            cycle_suffix
+        ),
+        Phase::Focus => format!(
+            "{} · {}{}",
+            if en { "Focusing" } else { "专注中" },
+            format_duration_tray(remaining),
+            cycle_suffix
+        ),
+        Phase::Break => format!(
+            "{} · {}{}",
+            if en { "Break" } else { "休息中" },
+            format_duration_tray(remaining),
+            cycle_suffix
+        ),
     };
 
     let mut menu = SystemTrayMenu::new()
@@ -309,24 +338,46 @@ fn build_tray_menu(
     }
 
     menu = match phase {
-        Phase::Idle => menu.add_item(CustomMenuItem::new("start", "开始番茄")),
+        Phase::Idle => menu.add_item(CustomMenuItem::new(
+            "start",
+            if en { "Start" } else { "开始番茄" },
+        )),
         Phase::Focus if paused => menu
-            .add_item(CustomMenuItem::new("resume", "继续专注"))
-            .add_item(CustomMenuItem::new("cancel", "取消本轮")),
+            .add_item(CustomMenuItem::new(
+                "resume",
+                if en { "Resume" } else { "继续专注" },
+            ))
+            .add_item(CustomMenuItem::new(
+                "cancel",
+                if en { "Cancel Round" } else { "取消本轮" },
+            )),
         Phase::Focus => menu
-            .add_item(CustomMenuItem::new("pause", "暂停专注"))
-            .add_item(CustomMenuItem::new("cancel", "取消本轮")),
-        Phase::Break if !force_break => {
-            menu.add_item(CustomMenuItem::new("end_break", "提前结束休息"))
-        }
+            .add_item(CustomMenuItem::new(
+                "pause",
+                if en { "Pause" } else { "暂停专注" },
+            ))
+            .add_item(CustomMenuItem::new(
+                "cancel",
+                if en { "Cancel Round" } else { "取消本轮" },
+            )),
+        Phase::Break if !force_break => menu.add_item(CustomMenuItem::new(
+            "end_break",
+            if en { "End Break Early" } else { "提前结束休息" },
+        )),
         Phase::Break => menu,
     };
 
     menu.add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(CustomMenuItem::new("show", "显示主窗口"))
-        .add_item(CustomMenuItem::new("about", "关于 Focus Lock"))
+        .add_item(CustomMenuItem::new(
+            "show",
+            if en { "Show Window" } else { "显示主窗口" },
+        ))
+        .add_item(CustomMenuItem::new(
+            "about",
+            if en { "About Focus Lock" } else { "关于 Focus Lock" },
+        ))
         .add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(CustomMenuItem::new("quit", "退出"))
+        .add_item(CustomMenuItem::new("quit", if en { "Quit" } else { "退出" }))
 }
 
 fn update_tray_menu(app: &AppHandle) {
@@ -335,7 +386,7 @@ fn update_tray_menu(app: &AppHandle) {
         let r = state.runtime.lock().unwrap();
         (r.phase, r.remaining_seconds, r.paused)
     };
-    let (cycles, force_break, tasks) = {
+    let (cycles, force_break, tasks, language) = {
         let p = state.persistent.lock().unwrap();
         let tasks: Vec<(String, String)> = p
             .today_tasks
@@ -343,9 +394,9 @@ fn update_tray_menu(app: &AppHandle) {
             .zip(p.task_statuses.iter())
             .map(|(t, s)| (t.clone(), s.clone()))
             .collect();
-        (p.completed_cycles, p.settings.force_break, tasks)
+        (p.completed_cycles, p.settings.force_break, tasks, p.settings.language.clone())
     };
-    let menu = build_tray_menu(phase, remaining, paused, cycles, force_break, &tasks);
+    let menu = build_tray_menu(phase, remaining, paused, cycles, force_break, &tasks, &language);
     let _ = app.tray_handle().set_menu(menu);
 }
 
@@ -959,6 +1010,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
         persistent.settings.auto_restart = settings.auto_restart;
         persistent.settings.launch_on_login = settings.launch_on_login;
         persistent.settings.force_break = settings.force_break;
+        persistent.settings.language = settings.language.clone();
         persist_state(&app, &persistent).map_err(|err| err.to_string())?;
         persistent.settings.clone()
     };
@@ -1011,7 +1063,7 @@ fn main() {
             let tray_app = app_handle.clone();
             let tray = SystemTray::new()
                 .with_icon(tray_icon())
-                .with_menu(build_tray_menu(Phase::Idle, 0, false, 0, true, &[]))
+                .with_menu(build_tray_menu(Phase::Idle, 0, false, 0, true, &[], ""))
                 .with_tooltip("Focus Lock")
                 .on_event(move |event| match event {
                     SystemTrayEvent::LeftClick { .. } => show_main_window(&tray_app),

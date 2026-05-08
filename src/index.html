@@ -11,8 +11,9 @@
 
       <header class="app-header">
         <span class="app-title">Focus Lock</span>
-        <span class="app-desc">番茄时钟 · 休息锁定</span>
-        <button id="about-btn" class="about-btn">关于</button>
+        <span class="app-desc" data-i18n="appDesc">番茄时钟 · 休息锁定</span>
+        <button id="lang-btn" class="lang-btn">EN</button>
+        <button id="about-btn" class="about-btn" data-i18n="aboutBtn">关于</button>
       </header>
 
       <dialog id="about-dialog">
@@ -20,10 +21,10 @@
           <button id="about-close" class="about-close">✕</button>
           <div class="about-logo">F</div>
           <h2 class="about-name">Focus Lock</h2>
-          <p class="about-version">版本 0.1.0</p>
-          <p class="about-desc">番茄时钟 + 休息强制锁定<br>工作时专注，休息时强制离开屏幕。</p>
+          <p class="about-version" data-i18n="aboutVersion">版本 0.1.0</p>
+          <p class="about-desc" data-i18n-html="aboutDesc">番茄时钟 + 休息强制锁定<br>工作时专注，休息时强制离开屏幕。</p>
           <div class="about-divider"></div>
-          <button id="about-github" class="about-link">在 GitHub 上查看源码</button>
+          <button id="about-github" class="about-link" data-i18n="aboutGithub">在 GitHub 上查看源码</button>
           <p class="about-author">© 2026 acdiost</p>
         </div>
       </dialog>
@@ -38,73 +39,73 @@
           <p id="status-text">准备开始新的专注轮次</p>
           <p id="quote-inline"></p>
           <div class="button-row">
-            <button id="start-btn" class="primary">开始番茄</button>
-            <button id="pause-btn">暂停</button>
-            <button id="resume-btn">继续</button>
-            <button id="cancel-btn" class="danger">取消</button>
+            <button id="start-btn" class="primary" data-i18n="startBtn">开始番茄</button>
+            <button id="pause-btn" data-i18n="pauseBtn">暂停</button>
+            <button id="resume-btn" data-i18n="resumeBtn">继续</button>
+            <button id="cancel-btn" class="danger" data-i18n="cancelBtn">取消</button>
           </div>
         </div>
 
         <div class="quote-side">
-          <p class="side-label">当前一言</p>
+          <p class="side-label" data-i18n="quoteLabel">当前一言</p>
           <blockquote id="quote-card"></blockquote>
           <div class="reminder-band">
-            <span>喝水</span>
-            <span>站立</span>
-            <span>远眺</span>
-            <span>放松肩颈</span>
+            <span data-i18n="reminderWater">喝水</span>
+            <span data-i18n="reminderStand">站立</span>
+            <span data-i18n="reminderEye">远眺</span>
+            <span data-i18n="reminderShoulder">放松肩颈</span>
           </div>
-          <p class="side-note">工作时专注，休息时离开屏幕。休息锁定页会在所有显示器上展示今日重点、一言和提醒。</p>
+          <p class="side-note" data-i18n="sideNote">工作时专注，休息时离开屏幕。休息锁定页会在所有显示器上展示今日重点、一言和提醒。</p>
         </div>
 
         <article class="panel settings-panel">
           <div class="panel-head">
-            <h2>节奏设置</h2>
-            <p>工作与休息时长会持久化保存。</p>
+            <h2 data-i18n="settingsHeading">节奏设置</h2>
+            <p data-i18n="settingsDesc">工作与休息时长会持久化保存。</p>
           </div>
           <div class="field-grid">
             <label>
-              <span>工作时长（分钟）</span>
+              <span data-i18n="focusLabel">工作时长（分钟）</span>
               <input id="focus-minutes" type="number" min="1" max="180" />
             </label>
             <label>
-              <span>休息时长（分钟）</span>
+              <span data-i18n="breakLabel">休息时长（分钟）</span>
               <input id="break-minutes" type="number" min="1" max="60" />
             </label>
           </div>
           <div class="toggle-list">
             <label class="toggle">
               <input id="online-quote" type="checkbox" />
-              <span>启用在线一言刷新</span>
+              <span data-i18n="toggleOnlineQuote">启用在线一言刷新</span>
             </label>
             <label class="toggle">
               <input id="water-reminder" type="checkbox" />
-              <span>展示喝水提醒</span>
+              <span data-i18n="toggleWater">展示喝水提醒</span>
             </label>
             <label class="toggle">
               <input id="stand-reminder" type="checkbox" />
-              <span>展示站立活动提醒</span>
+              <span data-i18n="toggleStand">展示站立活动提醒</span>
             </label>
             <label class="toggle">
               <input id="auto-restart" type="checkbox" />
-              <span>休息结束后自动开始下一轮</span>
+              <span data-i18n="toggleAutoRestart">休息结束后自动开始下一轮</span>
             </label>
             <label class="toggle">
               <input id="force-break" type="checkbox" />
-              <span>强制休息（不可提前结束）</span>
+              <span data-i18n="toggleForceBreak">强制休息（不可提前结束）</span>
             </label>
             <label class="toggle">
               <input id="launch-on-login" type="checkbox" />
-              <span>开机自动启动</span>
+              <span data-i18n="toggleLaunchOnLogin">开机自动启动</span>
             </label>
           </div>
-          <button id="save-settings-btn" class="secondary">保存设置</button>
+          <button id="save-settings-btn" class="secondary" data-i18n="saveSettingsBtn">保存设置</button>
         </article>
 
         <article class="panel tasks-panel">
           <div class="panel-head">
-            <h2>今日重要事项</h2>
-            <p>最多 3 件，跨天自动清空。</p>
+            <h2 data-i18n="tasksHeading">今日重要事项</h2>
+            <p data-i18n="tasksDesc">最多 3 件，跨天自动清空。</p>
           </div>
           <div class="task-list">
             <div class="task-item">
@@ -120,7 +121,7 @@
               <input id="task-2" maxlength="60" placeholder="事项 3" />
             </div>
           </div>
-          <button id="save-tasks-btn" class="secondary">保存事项</button>
+          <button id="save-tasks-btn" class="secondary" data-i18n="saveTasksBtn">保存事项</button>
         </article>
       </div>
 
@@ -128,21 +129,21 @@
 
     <section id="lock-shell" class="lock-shell" hidden>
       <div class="lock-content">
-        <p class="lock-tag">休息时间</p>
+        <p class="lock-tag" data-i18n="lockTag">休息时间</p>
         <h1 id="lock-countdown">05:00</h1>
-        <p id="lock-status">离开屏幕，喝水，站起来活动一下。</p>
+        <p id="lock-status" data-i18n="lockStatus">离开屏幕，喝水，站起来活动一下。</p>
         <div class="lock-panels">
           <article class="lock-panel">
-            <h2>今日重要事项</h2>
+            <h2 data-i18n="lockTasksHeading">今日重要事项</h2>
             <ul id="lock-tasks"></ul>
           </article>
           <article class="lock-panel">
-            <h2>一言</h2>
+            <h2 data-i18n="lockQuoteHeading">一言</h2>
             <blockquote id="lock-quote"></blockquote>
             <p id="lock-reminder"></p>
           </article>
         </div>
-        <button id="end-break-btn" class="end-break-btn" hidden>提前结束休息</button>
+        <button id="end-break-btn" class="end-break-btn" hidden data-i18n="endBreakBtn">提前结束休息</button>
       </div>
     </section>
 
