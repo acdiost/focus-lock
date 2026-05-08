@@ -142,6 +142,11 @@ const state = {
 
 let T = STRINGS.zh;
 
+// Dirty flags: when set, applySettings / applyTasks skip overwriting the form
+// so edits-in-progress are not stomped by the per-second state push.
+let settingsDirty = false;
+let tasksDirty = false;
+
 // ── Elements ───────────────────────────────────────────────────────────────────
 
 const els = {
@@ -259,6 +264,7 @@ function reminderPool(snapshot) {
 // ── Render ─────────────────────────────────────────────────────────────────────
 
 function applySettings(snapshot) {
+  if (settingsDirty) return;
   els.focusMinutes.value = snapshot.settings.focusMinutes;
   els.breakMinutes.value = snapshot.settings.breakMinutes;
   els.onlineQuote.checked = snapshot.settings.enableOnlineQuote;
@@ -273,11 +279,17 @@ const STATUS_CYCLE = { none: "doing", doing: "done", done: "none" };
 const STATUS_ICON = { none: "○", doing: "▶", done: "✓" };
 
 function applyTasks(snapshot) {
-  els.taskInputs.forEach((input, i) => {
-    input.value = snapshot.todayTasks[i] ?? "";
-  });
+  if (!tasksDirty) {
+    els.taskInputs.forEach((input, i) => {
+      input.value = snapshot.todayTasks[i] ?? "";
+    });
+  }
   els.statusBtns.forEach((btn, i) => {
-    const hasText = (snapshot.todayTasks[i] ?? "").trim().length > 0;
+    // When dirty, check the live input value so the button enabled-state stays correct.
+    const text = tasksDirty
+      ? (els.taskInputs[i]?.value ?? "")
+      : (snapshot.todayTasks[i] ?? "");
+    const hasText = text.trim().length > 0;
     const status = hasText ? (snapshot.taskStatuses?.[i] ?? "none") : "none";
     btn.dataset.status = status;
     btn.textContent = STATUS_ICON[status] ?? "○";
@@ -359,6 +371,7 @@ async function saveSettings() {
       language: state.lang,
     };
     await invoke("save_settings", { settings });
+    settingsDirty = false;
   } catch (err) {
     els.statusText.textContent = T.errSaveSettings(err);
   }
@@ -368,6 +381,7 @@ async function saveTasks() {
   try {
     const tasks = els.taskInputs.map((input) => input.value.trim());
     await invoke("set_today_tasks", { tasks });
+    tasksDirty = false;
   } catch (err) {
     els.statusText.textContent = T.errSaveTasks(err);
   }
@@ -397,6 +411,19 @@ function bindEvents() {
         });
       } catch (_) {}
     });
+
+    // Mark settings/tasks dirty as soon as the user edits, so per-second
+    // render calls don't stomp in-progress changes before the user saves.
+    [els.focusMinutes, els.breakMinutes].forEach((el) =>
+      el.addEventListener("input", () => { settingsDirty = true; })
+    );
+    [els.onlineQuote, els.waterReminder, els.standReminder,
+     els.autoRestart, els.forceBreak, els.launchOnLogin].forEach((el) =>
+      el.addEventListener("change", () => { settingsDirty = true; })
+    );
+    els.taskInputs.forEach((input) =>
+      input.addEventListener("input", () => { tasksDirty = true; })
+    );
 
     els.startBtn.addEventListener("click", async () => {
       try {
