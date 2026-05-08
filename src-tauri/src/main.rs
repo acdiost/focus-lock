@@ -282,10 +282,13 @@ fn build_tray_menu(
         .add_item(CustomMenuItem::new("status", status).disabled())
         .add_native_item(SystemTrayMenuItem::Separator);
 
-    // Today's tasks — shown as read-only context items
-    let filled: Vec<_> = tasks.iter().filter(|(text, _)| !text.is_empty()).collect();
-    if !filled.is_empty() {
-        for (i, (text, status_str)) in filled.iter().enumerate() {
+    // Today's tasks — click cycles status: none → doing → done → none
+    let has_tasks = tasks.iter().any(|(text, _)| !text.is_empty());
+    if has_tasks {
+        for (slot, (text, status_str)) in tasks.iter().enumerate() {
+            if text.is_empty() {
+                continue;
+            }
             let icon = match status_str.as_str() {
                 "doing" => "▶",
                 "done"  => "✓",
@@ -299,8 +302,7 @@ fn build_tray_menu(
                 label_text
             };
             menu = menu.add_item(
-                CustomMenuItem::new(format!("task_{}", i), format!("{} {}", icon, label_text))
-                    .disabled(),
+                CustomMenuItem::new(format!("task_{}", slot), format!("{} {}", icon, label_text)),
             );
         }
         menu = menu.add_native_item(SystemTrayMenuItem::Separator);
@@ -1043,6 +1045,24 @@ fn main() {
                         }
                         "cancel" => transition_to_idle(&tray_app),
                         "end_break" => exit_break(&tray_app),
+                        id if id.starts_with("task_") => {
+                            if let Ok(index) = id["task_".len()..].parse::<usize>() {
+                                let state = tray_app.state::<AppState>();
+                                let mut persistent = state.persistent.lock().unwrap();
+                                ensure_today_fresh(&mut persistent);
+                                if index < 3 && !persistent.today_tasks[index].is_empty() {
+                                    let next = match persistent.task_statuses[index].as_str() {
+                                        "none"  => "doing",
+                                        "doing" => "done",
+                                        _       => "none",
+                                    };
+                                    persistent.task_statuses[index] = next.to_string();
+                                    let _ = persist_state(&tray_app, &persistent);
+                                }
+                                drop(persistent);
+                                emit_snapshot(&tray_app);
+                            }
+                        }
                         "show" => show_main_window(&tray_app),
                         "about" => {
                             show_main_window(&tray_app);
