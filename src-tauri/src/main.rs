@@ -565,6 +565,27 @@ fn transition_to_break(app: &AppHandle) {
     tauri::async_runtime::spawn(refresh_online_quote(app.clone()));
 }
 
+// Called whenever a break ends (naturally or early). Respects auto_restart.
+fn exit_break(app: &AppHandle) {
+    let (auto_restart, focus_min, break_min) = {
+        let state = app.state::<AppState>();
+        let persistent = state.persistent.lock().unwrap();
+        (
+            persistent.settings.auto_restart,
+            persistent.settings.focus_minutes,
+            persistent.settings.break_minutes,
+        )
+    };
+    if auto_restart {
+        close_lock_windows(app);
+        if begin_focus(app, focus_min, break_min).is_err() {
+            transition_to_idle(app);
+        }
+    } else {
+        transition_to_idle(app);
+    }
+}
+
 fn transition_to_idle(app: &AppHandle) {
     close_lock_windows(app);
     {
@@ -617,26 +638,7 @@ fn tick_runtime(app: &AppHandle) {
         Action::None => {}
         Action::Emit => emit_snapshot(app),
         Action::EnterBreak => transition_to_break(app),
-        Action::ExitBreak => {
-            let auto_restart = {
-                let state = app.state::<AppState>();
-                let persistent = state.persistent.lock().unwrap();
-                persistent.settings.auto_restart
-            };
-            if auto_restart {
-                close_lock_windows(app);
-                let (focus_min, break_min) = {
-                    let state = app.state::<AppState>();
-                    let persistent = state.persistent.lock().unwrap();
-                    (persistent.settings.focus_minutes, persistent.settings.break_minutes)
-                };
-                if begin_focus(app, focus_min, break_min).is_err() {
-                    transition_to_idle(app);
-                }
-            } else {
-                transition_to_idle(app);
-            }
-        }
+        Action::ExitBreak => exit_break(app),
     }
 }
 
@@ -898,7 +900,7 @@ fn enter_break_lock(app: AppHandle) -> Snapshot {
 
 #[tauri::command]
 fn exit_break_lock(app: AppHandle) -> Snapshot {
-    transition_to_idle(&app);
+    exit_break(&app);
     build_snapshot(&app)
 }
 
@@ -960,7 +962,7 @@ fn main() {
                             }
                         }
                         "cancel" => transition_to_idle(&tray_app),
-                        "end_break" => transition_to_idle(&tray_app),
+                        "end_break" => exit_break(&tray_app),
                         "show" => show_main_window(&tray_app),
                         "about" => {
                             show_main_window(&tray_app);
