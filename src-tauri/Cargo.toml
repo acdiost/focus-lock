@@ -1,6 +1,6 @@
 [package]
 name = "focus-lock"
-version = "0.1.0"
+version = "1.0.1"
 description = "Pomodoro timer with multi-display break lock for macOS and Windows"
 authors = ["OpenAI Codex"]
 license = ""
