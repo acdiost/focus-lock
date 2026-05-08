@@ -28,6 +28,7 @@ struct Settings {
     enable_online_quote: bool,
     enable_water_reminder: bool,
     enable_stand_reminder: bool,
+    auto_restart: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +39,7 @@ impl Default for Settings {
             enable_online_quote: true,
             enable_water_reminder: true,
             enable_stand_reminder: true,
+            auto_restart: false,
         }
     }
 }
@@ -449,7 +451,26 @@ fn tick_runtime(app: &AppHandle) {
         Action::None => {}
         Action::Emit => emit_snapshot(app),
         Action::EnterBreak => transition_to_break(app),
-        Action::ExitBreak => transition_to_idle(app),
+        Action::ExitBreak => {
+            let auto_restart = {
+                let state = app.state::<AppState>();
+                let persistent = state.persistent.lock().unwrap();
+                persistent.settings.auto_restart
+            };
+            if auto_restart {
+                close_lock_windows(app);
+                let (focus_min, break_min) = {
+                    let state = app.state::<AppState>();
+                    let persistent = state.persistent.lock().unwrap();
+                    (persistent.settings.focus_minutes, persistent.settings.break_minutes)
+                };
+                if begin_focus(app, focus_min, break_min).is_err() {
+                    transition_to_idle(app);
+                }
+            } else {
+                transition_to_idle(app);
+            }
+        }
     }
 }
 
@@ -622,6 +643,7 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
         persistent.settings.enable_online_quote = settings.enable_online_quote;
         persistent.settings.enable_water_reminder = settings.enable_water_reminder;
         persistent.settings.enable_stand_reminder = settings.enable_stand_reminder;
+        persistent.settings.auto_restart = settings.auto_restart;
         persist_state(&app, &persistent).map_err(|err| err.to_string())?;
         persistent.settings.clone()
     };
