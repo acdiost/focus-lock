@@ -30,6 +30,7 @@ const els = {
   standReminder: document.querySelector("#stand-reminder"),
   autoRestart: document.querySelector("#auto-restart"),
   taskInputs: [0, 1, 2].map((index) => document.querySelector(`#task-${index}`)),
+  statusBtns: [0, 1, 2].map((index) => document.querySelector(`.status-btn[data-index="${index}"]`)),
   startBtn: document.querySelector("#start-btn"),
   pauseBtn: document.querySelector("#pause-btn"),
   resumeBtn: document.querySelector("#resume-btn"),
@@ -96,9 +97,19 @@ function applySettings(snapshot) {
   els.autoRestart.checked = snapshot.settings.autoRestart;
 }
 
+const STATUS_CYCLE = { none: "doing", doing: "done", done: "none" };
+const STATUS_ICON  = { none: "○", doing: "▶", done: "✓" };
+
 function applyTasks(snapshot) {
-  els.taskInputs.forEach((input, index) => {
-    input.value = snapshot.todayTasks[index] ?? "";
+  els.taskInputs.forEach((input, i) => {
+    input.value = snapshot.todayTasks[i] ?? "";
+  });
+  els.statusBtns.forEach((btn, i) => {
+    const hasText = (snapshot.todayTasks[i] ?? "").trim().length > 0;
+    const status = hasText ? (snapshot.taskStatuses?.[i] ?? "none") : "none";
+    btn.dataset.status = status;
+    btn.textContent = STATUS_ICON[status] ?? "○";
+    btn.disabled = !hasText;
   });
 }
 
@@ -122,10 +133,16 @@ function renderLock(snapshot) {
   els.lockStatus.textContent = "离开桌面。喝水，站起来，等休息结束。";
   els.lockQuote.textContent = quoteCopy(snapshot.quote);
   els.lockTasks.innerHTML = "";
-  const items = snapshot.todayTasks.length ? snapshot.todayTasks : ["休息结束后，回来处理今天最重要的一件事。"];
-  items.forEach((task) => {
+  const rawTasks = snapshot.todayTasks || [];
+  const rawStatuses = snapshot.taskStatuses || [];
+  const filled = rawTasks
+    .map((text, i) => ({ text, status: rawStatuses[i] ?? "none" }))
+    .filter((t) => t.text.trim());
+  const items = filled.length ? filled : [{ text: "休息结束后，回来处理今天最重要的一件事。", status: "none" }];
+  items.forEach(({ text, status }) => {
     const li = document.createElement("li");
-    li.textContent = task;
+    li.textContent = text;
+    li.dataset.status = status;
     els.lockTasks.appendChild(li);
   });
   els.lockReminder.textContent = reminders[state.reminderIndex % reminders.length];
@@ -197,6 +214,17 @@ function bindEvents() {
     });
     els.saveSettingsBtn.addEventListener("click", saveSettings);
     els.saveTasksBtn.addEventListener("click", saveTasks);
+
+    els.statusBtns.forEach((btn, i) => {
+      btn.addEventListener("click", async () => {
+        const next = STATUS_CYCLE[btn.dataset.status ?? "none"] ?? "none";
+        try {
+          await invoke("set_task_status", { index: i, status: next });
+        } catch (err) {
+          els.statusText.textContent = `操作失败：${err}`;
+        }
+      });
+    });
 
     const dialog = document.getElementById("about-dialog");
     document.getElementById("about-btn").addEventListener("click", () => dialog.showModal());

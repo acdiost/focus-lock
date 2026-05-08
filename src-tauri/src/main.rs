@@ -61,6 +61,8 @@ struct PersistentState {
     settings: Settings,
     today_date: String,
     today_tasks: Vec<String>,
+    #[serde(default)]
+    task_statuses: Vec<String>,
     quote_cache: Option<Quote>,
     completed_cycles: u32,
 }
@@ -70,7 +72,8 @@ impl Default for PersistentState {
         Self {
             settings: Settings::default(),
             today_date: today_string(),
-            today_tasks: vec![],
+            today_tasks: vec![String::new(); 3],
+            task_statuses: vec!["none".to_string(); 3],
             quote_cache: None,
             completed_cycles: 0,
         }
@@ -120,6 +123,7 @@ struct Snapshot {
     completed_cycles: u32,
     settings: Settings,
     today_tasks: Vec<String>,
+    task_statuses: Vec<String>,
     quote: Quote,
 }
 
@@ -158,9 +162,13 @@ fn ensure_today_fresh(persistent: &mut PersistentState) {
     let today = today_string();
     if persistent.today_date != today {
         persistent.today_date = today;
-        persistent.today_tasks.clear();
+        persistent.today_tasks = vec![String::new(); 3];
+        persistent.task_statuses = vec!["none".to_string(); 3];
         persistent.completed_cycles = 0;
     }
+    // Ensure slices are always length 3 (handles old persisted data)
+    persistent.today_tasks.resize(3, String::new());
+    persistent.task_statuses.resize(3, "none".to_string());
 }
 
 fn load_persistent_state(app: &AppHandle) -> PersistentState {
@@ -231,6 +239,7 @@ fn build_snapshot(app: &AppHandle) -> Snapshot {
         completed_cycles: persistent.completed_cycles,
         settings: persistent.settings.clone(),
         today_tasks: persistent.today_tasks.clone(),
+        task_statuses: persistent.task_statuses.clone(),
         quote: runtime.current_quote.clone(),
     }
 }
@@ -735,25 +744,44 @@ fn get_today_tasks(app: AppHandle) -> Vec<String> {
 
 #[tauri::command]
 fn set_today_tasks(app: AppHandle, tasks: Vec<String>) -> Result<Vec<String>, String> {
-    let mut cleaned = Vec::new();
-    for task in tasks.into_iter().map(|task| task.trim().to_string()) {
-        if !task.is_empty() {
-            cleaned.push(task);
-        }
-    }
-    if cleaned.len() > 3 {
+    if tasks.len() > 3 {
         return Err("今日重要事项最多 3 件".to_string());
     }
+    // Preserve slot positions (including empty strings) so task_statuses stay aligned.
+    let mut slots: Vec<String> = tasks.into_iter().map(|t| t.trim().to_string()).collect();
+    slots.resize(3, String::new());
 
     let state = app.state::<AppState>();
     {
         let mut persistent = state.persistent.lock().unwrap();
         ensure_today_fresh(&mut persistent);
-        persistent.today_tasks = cleaned.clone();
+        // Reset status for any slot whose text was cleared.
+        for (i, text) in slots.iter().enumerate() {
+            if text.is_empty() {
+                persistent.task_statuses[i] = "none".to_string();
+            }
+        }
+        persistent.today_tasks = slots.clone();
         persist_state(&app, &persistent).map_err(|err| err.to_string())?;
     }
     emit_snapshot(&app);
-    Ok(cleaned)
+    Ok(slots)
+}
+
+#[tauri::command]
+fn set_task_status(app: AppHandle, index: usize, status: String) -> Snapshot {
+    if index < 3 && matches!(status.as_str(), "none" | "doing" | "done") {
+        let state = app.state::<AppState>();
+        let mut persistent = state.persistent.lock().unwrap();
+        ensure_today_fresh(&mut persistent);
+        // Only set if the slot actually has text.
+        if !persistent.today_tasks[index].is_empty() {
+            persistent.task_statuses[index] = status;
+            let _ = persist_state(&app, &persistent);
+        }
+    }
+    emit_snapshot(&app);
+    build_snapshot(&app)
 }
 
 #[tauri::command]
@@ -889,6 +917,7 @@ fn main() {
             cancel_pomodoro,
             get_today_tasks,
             set_today_tasks,
+            set_task_status,
             get_settings,
             save_settings,
             enter_break_lock,

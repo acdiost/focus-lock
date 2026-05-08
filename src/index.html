@@ -99,9 +99,18 @@
             <p>最多 3 件，跨天自动清空。</p>
           </div>
           <div class="task-list">
-            <input id="task-0" maxlength="60" placeholder="事项 1" />
-            <input id="task-1" maxlength="60" placeholder="事项 2" />
-            <input id="task-2" maxlength="60" placeholder="事项 3" />
+            <div class="task-item">
+              <button class="status-btn" data-index="0" data-status="none" title="切换状态">○</button>
+              <input id="task-0" maxlength="60" placeholder="事项 1" />
+            </div>
+            <div class="task-item">
+              <button class="status-btn" data-index="1" data-status="none" title="切换状态">○</button>
+              <input id="task-1" maxlength="60" placeholder="事项 2" />
+            </div>
+            <div class="task-item">
+              <button class="status-btn" data-index="2" data-status="none" title="切换状态">○</button>
+              <input id="task-2" maxlength="60" placeholder="事项 3" />
+            </div>
           </div>
           <button id="save-tasks-btn" class="secondary">保存事项</button>
         </article>
