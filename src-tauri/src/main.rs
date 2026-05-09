@@ -156,6 +156,10 @@ struct HitokotoResponse {
 struct AppState {
     persistent: Mutex<PersistentState>,
     runtime: Mutex<RuntimeState>,
+    // Tracks last rendered tray key to avoid rebuilding the native menu every second.
+    // On Windows, each set_menu() call creates a new HMENU without destroying the old one,
+    // slowly exhausting USER handle resources.
+    last_tray_key: Mutex<String>,
 }
 
 fn today_string() -> String {
@@ -255,13 +259,8 @@ fn build_snapshot(app: &AppHandle) -> Snapshot {
     }
 }
 
-fn format_duration_tray(secs: u64) -> String {
-    format!("{:02}:{:02}", secs / 60, secs % 60)
-}
-
 fn build_tray_menu(
     phase: Phase,
-    remaining: u64,
     paused: bool,
     cycles: u32,
     force_break: bool,
@@ -288,21 +287,18 @@ fn build_tray_menu(
             cycle_suffix
         ),
         Phase::Focus if paused => format!(
-            "{} · {}{}",
+            "{}{}",
             if en { "Paused" } else { "专注暂停" },
-            format_duration_tray(remaining),
             cycle_suffix
         ),
         Phase::Focus => format!(
-            "{} · {}{}",
+            "{}{}",
             if en { "Focusing" } else { "专注中" },
-            format_duration_tray(remaining),
             cycle_suffix
         ),
         Phase::Break => format!(
-            "{} · {}{}",
+            "{}{}",
             if en { "Break" } else { "休息中" },
-            format_duration_tray(remaining),
             cycle_suffix
         ),
     };
@@ -382,9 +378,9 @@ fn build_tray_menu(
 
 fn update_tray_menu(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let (phase, remaining, paused) = {
+    let (phase, paused) = {
         let r = state.runtime.lock().unwrap();
-        (r.phase, r.remaining_seconds, r.paused)
+        (r.phase, r.paused)
     };
     let (cycles, force_break, tasks, language) = {
         let p = state.persistent.lock().unwrap();
@@ -396,7 +392,22 @@ fn update_tray_menu(app: &AppHandle) {
             .collect();
         (p.completed_cycles, p.settings.force_break, tasks, p.settings.language.clone())
     };
-    let menu = build_tray_menu(phase, remaining, paused, cycles, force_break, &tasks, &language);
+
+    // Only rebuild the native menu when something structural changes.  The tray no longer
+    // shows a live countdown so the per-second timer tick never triggers set_menu().
+    // On Windows, each set_menu() call allocates a new HMENU without freeing the previous
+    // one, exhausting USER handle resources over long runtimes.
+    let tasks_key: String = tasks.iter().map(|(t, s)| format!("{t}:{s}|")).collect();
+    let new_key = format!("{phase:?}|{paused}|{cycles}|{force_break}|{language}|{tasks_key}");
+    {
+        let mut last_key = state.last_tray_key.lock().unwrap();
+        if *last_key == new_key {
+            return;
+        }
+        *last_key = new_key;
+    }
+
+    let menu = build_tray_menu(phase, paused, cycles, force_break, &tasks, &language);
     let _ = app.tray_handle().set_menu(menu);
 }
 
@@ -1061,7 +1072,7 @@ fn main() {
             let tray_app = app_handle.clone();
             let tray = SystemTray::new()
                 .with_icon(tray_icon())
-                .with_menu(build_tray_menu(Phase::Idle, 0, false, 0, true, &[], ""))
+                .with_menu(build_tray_menu(Phase::Idle, false, 0, true, &[], ""))
                 .with_tooltip("Focus Lock")
                 .on_event(move |event| match event {
                     SystemTrayEvent::LeftClick { .. } => show_main_window(&tray_app),
