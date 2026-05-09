@@ -4,7 +4,7 @@ if (!tauri) {
   throw new Error("Tauri API is not available. Ensure withGlobalTauri is enabled.");
 }
 
-const { invoke } = tauri.tauri;
+const { invoke } = tauri.core;
 const { listen } = tauri.event;
 const { open: shellOpen } = tauri.shell;
 

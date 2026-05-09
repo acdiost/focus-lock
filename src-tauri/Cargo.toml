@@ -1,15 +1,15 @@
 [package]
 name = "focus-lock"
-version = "1.0.1"
+version = "2.0.0"
 description = "Pomodoro timer with multi-display break lock for macOS and Windows"
-authors = ["OpenAI Codex"]
+authors = ["Acdiost"]
 license = ""
 repository = ""
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.95"
 
 [build-dependencies]
-tauri-build = { version = "=1.5.1", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
@@ -21,10 +21,9 @@ winreg = "0.52"
 chrono = { version = "=0.4.38", features = ["clock", "serde"] }
 reqwest = { version = "=0.11.27", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "=1.0.203", features = ["derive"] }
-serde_json = "=1.0.117"
-tauri = { version = "=1.6.7", features = ["api-all", "icon-png"] }
+serde_json = "1"
+tauri = { version = "2.11", features = ["tray-icon", "image-png"] }
+tauri-plugin-shell = "2.3"
 
 [features]
-default = ["custom-protocol", "tray"]
-custom-protocol = ["tauri/custom-protocol"]
-tray = ["tauri/system-tray"]
+default = []

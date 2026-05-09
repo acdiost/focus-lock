@@ -15,7 +15,7 @@
 - **一言** — 调用 [hitokoto.cn](https://v1.hitokoto.cn/) API，24 小时缓存，离线时自动使用本地文案
 - **健康提醒** — 喝水 / 站立活动提醒，在锁屏界面轮播
 - **无限循环** — 可选择休息结束后自动开始下一轮专注
-- **系统托盘** — 关闭主窗口后隐藏到托盘，右键菜单实时显示计时状态与阶段操作
+- **系统托盘** — 关闭主窗口后隐藏到托盘
 - **设置持久化** — 所有配置保存在系统应用目录，重启后保留
 
 ## 截图
@@ -30,7 +30,7 @@
 |------|---------|
 | macOS | 10.15 Catalina |
 | Windows | 10 |
-| Linux | GTK 3 + WebKitGTK 4.0（Ubuntu 20.04 / Fedora 35+） |
+| Linux | GTK 3 + WebKitGTK 4.1（Ubuntu 22.04 / Fedora 36+） |
 
 ---
 
@@ -65,7 +65,7 @@ chmod +x focus-lock_x.x.x_amd64.AppImage
 sudo dpkg -i focus-lock_x.x.x_amd64.deb
 ```
 
-> Linux 版本要求系统已安装 `libwebkit2gtk-4.0-37`、`libgtk-3-0` 和 `libayatana-appindicator3-1`（托盘支持）。Ubuntu 22.04+ 通常已自带前两者；托盘库可通过 `sudo apt install libayatana-appindicator3-1` 安装。
+> Linux 版本要求系统已安装 `libwebkit2gtk-4.1-0`、`libgtk-3-0` 和 `libayatana-appindicator3-1`（托盘支持）。Ubuntu 22.04+ 通常已自带 GTK 3；WebKitGTK 4.1 和托盘库可通过 `sudo apt install libwebkit2gtk-4.1-0 libayatana-appindicator3-1` 安装。
 
 ---
 
@@ -76,7 +76,7 @@ sudo dpkg -i focus-lock_x.x.x_amd64.deb
 | 工具 | 说明 |
 |------|------|
 | [Node.js](https://nodejs.org/) 18+ | JavaScript 运行时 |
-| [Rust](https://rustup.rs/) stable 1.77+ | 后端编译 |
+| [Rust](https://rustup.rs/) stable 1.95+ | 后端编译 |
 | Xcode Command Line Tools | 仅 macOS，`xcode-select --install` |
 | WebView2 + MSVC 构建工具 | 仅 Windows |
 | GTK 3 / WebKitGTK / AppIndicator | 仅 Linux，见下方说明 |
@@ -84,14 +84,14 @@ sudo dpkg -i focus-lock_x.x.x_amd64.deb
 **Linux 构建依赖**（Ubuntu / Debian）：
 
 ```bash
-sudo apt install libwebkit2gtk-4.0-dev libgtk-3-dev \
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
   libayatana-appindicator3-dev librsvg2-dev patchelf
 ```
 
 Fedora / RHEL：
 
 ```bash
-sudo dnf install webkit2gtk4.0-devel gtk3-devel \
+sudo dnf install webkit2gtk4.1-devel gtk3-devel \
   libayatana-appindicator-gtk3-devel librsvg2-devel patchelf
 ```
 
@@ -140,11 +140,11 @@ npm run build
 | Linux | `src-tauri/target/release/bundle/appimage/focus-lock_x.x.x_amd64.AppImage` |
 | Linux | `src-tauri/target/release/bundle/deb/focus-lock_x.x.x_amd64.deb` |
 
-> 托盘支持通过 Cargo feature `tray` 开启，已内置于 npm 脚本，无需手动传参。
+> Tauri v2 中托盘支持通过 `Cargo.toml` 的 `tray-icon` feature 开启，构建脚本无需额外参数。
 
 ### 代码签名（可选）
 
-当前配置不进行代码签名。如需正式公证分发，在 `src-tauri/tauri.conf.json` 中配置：
+当前配置不进行代码签名。如需正式公证分发，在 `src-tauri/tauri.conf.json` 的 `bundle.macOS` 中配置：
 
 ```json
 "macOS": {
@@ -165,7 +165,8 @@ focus-lock/
 │   ├── app.js              # 全部客户端逻辑
 │   └── style.css           # 样式
 ├── src-tauri/
-│   ├── src/main.rs         # 全部后端逻辑（~830 行）
+│   ├── src/main.rs         # 全部后端逻辑（~1100 行）
+│   ├── capabilities/       # Tauri v2 权限配置
 │   ├── icons/              # 应用图标（由 scripts/gen-icons.mjs 生成）
 │   └── tauri.conf.json     # Tauri 配置
 └── scripts/
@@ -180,8 +181,8 @@ focus-lock/
 | `RuntimeState` | 内存状态；当前阶段（`Idle` / `Focus` / `Break`）、剩余秒数、暂停标志 |
 | 后台计时线程 | 每秒 tick，驱动阶段转换，通过 `pomodoro://state` 事件向前端推送快照 |
 | `sync_lock_windows` | 休息开始时为每台显示器创建无边框全屏 `WebviewWindow`；macOS 额外设置窗口层级（`NSScreenSaverWindowLevel`）并隐藏菜单栏 |
-| `build_tray_menu` | 根据当前阶段动态构建托盘右键菜单，每次状态推送时刷新 |
-| `tray_icon` | 22×22 抗锯齿时钟图案（Rust 逐像素绘制），macOS 模板模式自动适配深浅色主题 |
+| `build_tray_menu` | 根据当前阶段动态构建托盘右键菜单（基于 Tauri v2 `Menu`/`MenuItem` API），每次状态变更时刷新 |
+| `tray_icon` | 嵌入式 PNG（`include_bytes!`），macOS 启用模板模式自动适配深浅色主题 |
 
 ---
 
@@ -196,7 +197,7 @@ focus-lock/
 
 ## 技术栈
 
-- [Tauri v1](https://tauri.app/) — Rust 后端 + WebView 前端壳
+- [Tauri v2](https://tauri.app/) — Rust 后端 + WebView 前端壳
 - [chrono](https://crates.io/crates/chrono) / [reqwest](https://crates.io/crates/reqwest) / [serde](https://crates.io/crates/serde) — 时间、网络、序列化
 - 前端：原生 HTML / CSS / JavaScript，无框架，无构建工具
 

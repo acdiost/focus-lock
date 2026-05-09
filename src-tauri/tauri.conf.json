@@ -1,49 +1,49 @@
 {
-  "$schema": "https://schema.tauri.app/config/1",
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FocusLock",
+  "version": "2.0.0",
+  "identifier": "com.acdiost.focuslock",
   "build": {
     "beforeBuildCommand": "",
     "beforeDevCommand": "",
-    "devPath": "../src",
-    "distDir": "../src",
-    "withGlobalTauri": true
+    "frontendDist": "../src"
   },
-  "package": {
-    "productName": "Focus Lock",
-    "version": "1.1.3"
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Focus Lock",
+        "width": 1180,
+        "height": 820,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
   },
-  "tauri": {
-    "allowlist": {
-      "all": true
-    },
-    "bundle": {
-      "active": true,
-      "identifier": "com.acdiost.focuslock",
-      "icon": [
-        "icons/32x32.png",
-        "icons/128x128.png",
-        "icons/128x128@2x.png",
-        "icons/icon.icns",
-        "icons/icon.ico"
-      ],
-      "targets": "all",
-      "category": "Productivity",
-      "shortDescription": "Pomodoro timer with break-time screen lock",
-      "longDescription": "Focus Lock is a Pomodoro timer that covers all displays during breaks, helping you take proper rest and stay focused.",
-      "copyright": "© 2026 acdiost",
-      "macOS": {
-        "frameworks": [],
-        "minimumSystemVersion": "10.15",
-        "signingIdentity": null,
-        "entitlements": null,
-        "hardenedRuntime": false
-      },
-      "deb": {
-        "depends": [
-          "libwebkit2gtk-4.0-37",
-          "libayatana-appindicator3-1",
-          "libgtk-3-0"
-        ]
-      },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "Pomodoro timer with break-time screen lock",
+    "longDescription": "Focus Lock is a Pomodoro timer that covers all displays during breaks, helping you take proper rest and stay focused.",
+    "copyright": "© 2026 acdiost",
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": null,
+      "entitlements": null,
+      "hardenedRuntime": false,
       "dmg": {
         "windowSize": {
           "width": 540,
@@ -59,18 +59,19 @@
         }
       }
     },
-    "security": {
-      "csp": null
-    },
-    "windows": [
-      {
-        "label": "main",
-        "title": "Focus Lock",
-        "width": 1180,
-        "height": 820,
-        "resizable": true,
-        "fullscreen": false
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libayatana-appindicator3-1",
+          "libgtk-3-0"
+        ]
       }
-    ]
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
   }
 }

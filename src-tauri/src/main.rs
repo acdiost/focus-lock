@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-#![allow(unexpected_cfgs)] // objc 0.2.7 macros emit cargo-clippy cfg checks on newer Rust
+#![allow(unexpected_cfgs)]
 
 use std::{
     fs,
@@ -13,10 +13,12 @@ use chrono::Local;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{
-    api::path::app_config_dir, AppHandle, CustomMenuItem, GlobalWindowEvent, Icon, Manager,
-    RunEvent, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, WindowBuilder,
-    WindowEvent, WindowUrl,
+    Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+type AppHandle = tauri::AppHandle<tauri::Wry>;
 
 const STATE_FILE_NAME: &str = "state.json";
 const LOCK_PREFIX: &str = "lock-screen-";
@@ -36,7 +38,7 @@ struct Settings {
     #[serde(default = "default_true")]
     force_break: bool,
     #[serde(default)]
-    language: String, // "zh" | "en" | "" (empty = auto-detect on frontend)
+    language: String,
 }
 
 fn default_true() -> bool { true }
@@ -156,9 +158,6 @@ struct HitokotoResponse {
 struct AppState {
     persistent: Mutex<PersistentState>,
     runtime: Mutex<RuntimeState>,
-    // Tracks last rendered tray key to avoid rebuilding the native menu every second.
-    // On Windows, each set_menu() call creates a new HMENU without destroying the old one,
-    // slowly exhausting USER handle resources.
     last_tray_key: Mutex<String>,
 }
 
@@ -167,7 +166,7 @@ fn today_string() -> String {
 }
 
 fn state_file_path(app: &AppHandle) -> PathBuf {
-    let mut root = app_config_dir(&app.config()).unwrap_or_else(|| PathBuf::from("."));
+    let mut root = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
     root.push("Focus Lock");
     root.push(STATE_FILE_NAME);
     root
@@ -181,7 +180,6 @@ fn ensure_today_fresh(persistent: &mut PersistentState) {
         persistent.task_statuses = vec!["none".to_string(); 3];
         persistent.completed_cycles = 0;
     }
-    // Ensure slices are always length 3 (handles old persisted data)
     persistent.today_tasks.resize(3, String::new());
     persistent.task_statuses.resize(3, "none".to_string());
 }
@@ -216,17 +214,11 @@ fn local_quotes() -> &'static [(&'static str, &'static str)] {
     &[
         ("先完成最重要的一件事，剩下的噪音会自己退后。", "Focus Lock"),
         ("专注不是压榨自己，而是替注意力清场。", "Focus Lock"),
-        (
-            "屏幕之外的几分钟休息，会换回来更长的稳定输出。",
-            "Focus Lock",
-        ),
+        ("屏幕之外的几分钟休息，会换回来更长的稳定输出。", "Focus Lock"),
         ("不要把休息当中断，它是下一段专注的准备动作。", "Focus Lock"),
         ("今天真正重要的事情，通常不会超过三件。", "Focus Lock"),
         ("把目光从像素里拔出来，身体才会跟上你的节奏。", "Focus Lock"),
-        (
-            "好的节奏不是一直冲刺，而是知道什么时候停下来。",
-            "Focus Lock",
-        ),
+        ("好的节奏不是一直冲刺，而是知道什么时候停下来。", "Focus Lock"),
     ]
 }
 
@@ -260,13 +252,14 @@ fn build_snapshot(app: &AppHandle) -> Snapshot {
 }
 
 fn build_tray_menu(
+    app: &AppHandle,
     phase: Phase,
     paused: bool,
     cycles: u32,
     force_break: bool,
     tasks: &[(String, String)],
     lang: &str,
-) -> SystemTrayMenu {
+) -> tauri::Result<Menu<tauri::Wry>> {
     let en = lang == "en";
 
     let cycle_suffix = if cycles > 0 {
@@ -281,34 +274,17 @@ fn build_tray_menu(
     };
 
     let status = match phase {
-        Phase::Idle => format!(
-            "Focus Lock · {}{}",
-            if en { "Idle" } else { "待机" },
-            cycle_suffix
-        ),
-        Phase::Focus if paused => format!(
-            "{}{}",
-            if en { "Paused" } else { "专注暂停" },
-            cycle_suffix
-        ),
-        Phase::Focus => format!(
-            "{}{}",
-            if en { "Focusing" } else { "专注中" },
-            cycle_suffix
-        ),
-        Phase::Break => format!(
-            "{}{}",
-            if en { "Break" } else { "休息中" },
-            cycle_suffix
-        ),
+        Phase::Idle => format!("Focus Lock · {}{}", if en { "Idle" } else { "待机" }, cycle_suffix),
+        Phase::Focus if paused => format!("{}{}", if en { "Paused" } else { "专注暂停" }, cycle_suffix),
+        Phase::Focus => format!("{}{}", if en { "Focusing" } else { "专注中" }, cycle_suffix),
+        Phase::Break => format!("{}{}", if en { "Break" } else { "休息中" }, cycle_suffix),
     };
 
-    let mut menu = SystemTrayMenu::new()
-        .add_item(CustomMenuItem::new("status", status).disabled())
-        .add_native_item(SystemTrayMenuItem::Separator);
+    let menu = Menu::new(app)?;
+    menu.append(&MenuItem::with_id(app, "status", &status, false, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
 
-    // Today's tasks — click cycles status: none → doing → done → none
-    let has_tasks = tasks.iter().any(|(text, _)| !text.is_empty());
+    let has_tasks = tasks.iter().any(|(t, _)| !t.is_empty());
     if has_tasks {
         for (slot, (text, status_str)) in tasks.iter().enumerate() {
             if text.is_empty() {
@@ -316,64 +292,48 @@ fn build_tray_menu(
             }
             let icon = match status_str.as_str() {
                 "doing" => "◑",
-                "done"  => "✓",
-                _       => "○",
+                "done" => "✓",
+                _ => "○",
             };
             let chars_count = text.chars().count();
             let label_text: String = text.chars().take(16).collect();
-            let label_text = if chars_count > 16 {
-                format!("{}…", label_text)
-            } else {
-                label_text
-            };
-            menu = menu.add_item(
-                CustomMenuItem::new(format!("task_{}", slot), format!("{} {}", icon, label_text)),
-            );
+            let label_text = if chars_count > 16 { format!("{}…", label_text) } else { label_text };
+            menu.append(&MenuItem::with_id(
+                app,
+                format!("task_{}", slot),
+                format!("{} {}", icon, label_text),
+                true,
+                None::<&str>,
+            )?)?;
         }
-        menu = menu.add_native_item(SystemTrayMenuItem::Separator);
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
 
-    menu = match phase {
-        Phase::Idle => menu.add_item(CustomMenuItem::new(
-            "start",
-            if en { "Start" } else { "开始番茄" },
-        )),
-        Phase::Focus if paused => menu
-            .add_item(CustomMenuItem::new(
-                "resume",
-                if en { "Resume" } else { "继续专注" },
-            ))
-            .add_item(CustomMenuItem::new(
-                "cancel",
-                if en { "Cancel Round" } else { "取消本轮" },
-            )),
-        Phase::Focus => menu
-            .add_item(CustomMenuItem::new(
-                "pause",
-                if en { "Pause" } else { "暂停专注" },
-            ))
-            .add_item(CustomMenuItem::new(
-                "cancel",
-                if en { "Cancel Round" } else { "取消本轮" },
-            )),
-        Phase::Break if !force_break => menu.add_item(CustomMenuItem::new(
-            "end_break",
-            if en { "End Break Early" } else { "提前结束休息" },
-        )),
-        Phase::Break => menu,
-    };
+    match phase {
+        Phase::Idle => {
+            menu.append(&MenuItem::with_id(app, "start", if en { "Start" } else { "开始番茄" }, true, None::<&str>)?)?;
+        }
+        Phase::Focus if paused => {
+            menu.append(&MenuItem::with_id(app, "resume", if en { "Resume" } else { "继续专注" }, true, None::<&str>)?)?;
+            menu.append(&MenuItem::with_id(app, "cancel", if en { "Cancel Round" } else { "取消本轮" }, true, None::<&str>)?)?;
+        }
+        Phase::Focus => {
+            menu.append(&MenuItem::with_id(app, "pause", if en { "Pause" } else { "暂停专注" }, true, None::<&str>)?)?;
+            menu.append(&MenuItem::with_id(app, "cancel", if en { "Cancel Round" } else { "取消本轮" }, true, None::<&str>)?)?;
+        }
+        Phase::Break if !force_break => {
+            menu.append(&MenuItem::with_id(app, "end_break", if en { "End Break Early" } else { "提前结束休息" }, true, None::<&str>)?)?;
+        }
+        Phase::Break => {}
+    }
 
-    menu.add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(CustomMenuItem::new(
-            "show",
-            if en { "Show Window" } else { "显示主窗口" },
-        ))
-        .add_item(CustomMenuItem::new(
-            "about",
-            if en { "About Focus Lock" } else { "关于 Focus Lock" },
-        ))
-        .add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(CustomMenuItem::new("quit", if en { "Quit" } else { "退出" }))
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(app, "show", if en { "Show Window" } else { "显示主窗口" }, true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "about", if en { "About Focus Lock" } else { "关于 Focus Lock" }, true, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(app, "quit", if en { "Quit" } else { "退出" }, true, None::<&str>)?)?;
+
+    Ok(menu)
 }
 
 fn update_tray_menu(app: &AppHandle) {
@@ -385,18 +345,12 @@ fn update_tray_menu(app: &AppHandle) {
     let (cycles, force_break, tasks, language) = {
         let p = state.persistent.lock().unwrap();
         let tasks: Vec<(String, String)> = p
-            .today_tasks
-            .iter()
-            .zip(p.task_statuses.iter())
+            .today_tasks.iter().zip(p.task_statuses.iter())
             .map(|(t, s)| (t.clone(), s.clone()))
             .collect();
         (p.completed_cycles, p.settings.force_break, tasks, p.settings.language.clone())
     };
 
-    // Only rebuild the native menu when something structural changes.  The tray no longer
-    // shows a live countdown so the per-second timer tick never triggers set_menu().
-    // On Windows, each set_menu() call allocates a new HMENU without freeing the previous
-    // one, exhausting USER handle resources over long runtimes.
     let tasks_key: String = tasks.iter().map(|(t, s)| format!("{t}:{s}|")).collect();
     let new_key = format!("{phase:?}|{paused}|{cycles}|{force_break}|{language}|{tasks_key}");
     {
@@ -407,13 +361,16 @@ fn update_tray_menu(app: &AppHandle) {
         *last_key = new_key;
     }
 
-    let menu = build_tray_menu(phase, paused, cycles, force_break, &tasks, &language);
-    let _ = app.tray_handle().set_menu(menu);
+    if let Ok(menu) = build_tray_menu(app, phase, paused, cycles, force_break, &tasks, &language) {
+        if let Some(tray) = app.tray_by_id("main-tray") {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
 }
 
 fn emit_snapshot(app: &AppHandle) {
     let snapshot = build_snapshot(app);
-    let _ = app.emit_all("pomodoro://state", snapshot);
+    let _ = app.emit("pomodoro://state", snapshot);
     update_tray_menu(app);
 }
 
@@ -515,9 +472,8 @@ fn current_quote(persistent: &PersistentState) -> Quote {
 }
 
 // Raise a lock window above the macOS menu bar and hide the menu bar + dock.
-// Window level 1000 = NSScreenSaverWindowLevel, above NSMainMenuWindowLevel (24).
-// Presentation flags: HideDock(2) | HideMenuBar(8) | DisableAppleMenu(16)
-//                   | DisableForceQuit(32) | DisableHideApplication(128) = 186
+// Window level 1000 = NSScreenSaverWindowLevel. Presentation flags 186 =
+// HideDock(2)|HideMenuBar(8)|DisableAppleMenu(16)|DisableForceQuit(32)|DisableHideApplication(128)
 #[cfg(target_os = "macos")]
 fn macos_lock_begin(app: &AppHandle, label: String) {
     let app2 = app.clone();
@@ -525,7 +481,7 @@ fn macos_lock_begin(app: &AppHandle, label: String) {
         #[allow(unused_imports)]
         use objc::{class, msg_send, sel, sel_impl};
         use objc::runtime::Object;
-        if let Some(w) = app2.get_window(&label) {
+        if let Some(w) = app2.get_webview_window(&label) {
             if let Ok(ptr) = w.ns_window() {
                 let _: () = msg_send![ptr as *mut Object, setLevel: 1000_i64];
             }
@@ -538,7 +494,6 @@ fn macos_lock_begin(app: &AppHandle, label: String) {
 #[cfg(not(target_os = "macos"))]
 fn macos_lock_begin(_app: &AppHandle, _label: String) {}
 
-// Reset NSApp presentation options when the break ends.
 #[cfg(target_os = "macos")]
 fn macos_lock_end(app: &AppHandle) {
     let _ = app.run_on_main_thread(|| unsafe {
@@ -554,10 +509,6 @@ fn macos_lock_end(app: &AppHandle) {
 fn macos_lock_end(_app: &AppHandle) {}
 
 fn close_lock_windows(app: &AppHandle) {
-    // Set flag before dispatching close calls so the CloseRequested handler allows them.
-    // The flag is intentionally NOT reset here — callers either change the phase
-    // immediately after (making the flag irrelevant) or reset it themselves
-    // (sync_lock_windows resets it before creating new break windows).
     {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
@@ -565,14 +516,14 @@ fn close_lock_windows(app: &AppHandle) {
     }
 
     let labels: Vec<String> = app
-        .windows()
+        .webview_windows()
         .keys()
         .filter(|label| label.starts_with(LOCK_PREFIX))
         .cloned()
         .collect();
 
     for label in labels {
-        if let Some(window) = app.get_window(&label) {
+        if let Some(window) = app.get_webview_window(&label) {
             let _ = window.close();
         }
     }
@@ -583,14 +534,13 @@ fn close_lock_windows(app: &AppHandle) {
 fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
     close_lock_windows(app);
 
-    // Reset flag now that old windows are being closed — new windows must not be closeable.
     {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
         runtime.allow_lock_close = false;
     }
 
-    let Some(main_window) = app.get_window("main") else {
+    let Some(main_window) = app.get_webview_window("main") else {
         return Ok(());
     };
     let monitors = main_window.available_monitors()?;
@@ -599,13 +549,12 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
         let scale = monitor.scale_factor();
         let size = monitor.size();
         let position = monitor.position();
-        // size/position are in physical pixels; inner_size/position expect logical points.
         let w = size.width as f64 / scale;
         let h = size.height as f64 / scale;
         let x = position.x as f64 / scale;
         let y = position.y as f64 / scale;
         let window =
-            WindowBuilder::new(app, label.clone(), WindowUrl::App("index.html#lock".into()))
+            WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::App("index.html#lock".into()))
                 .decorations(false)
                 .always_on_top(true)
                 .resizable(false)
@@ -632,7 +581,6 @@ async fn refresh_online_quote(app: AppHandle) {
         if !persistent.settings.enable_online_quote {
             false
         } else {
-            // Skip if cache is less than 24 hours old.
             let cache_fresh = persistent
                 .quote_cache
                 .as_ref()
@@ -734,7 +682,6 @@ fn transition_to_break(app: &AppHandle) {
     tauri::async_runtime::spawn(refresh_online_quote(app.clone()));
 }
 
-// Called whenever a break ends (naturally or early). Respects auto_restart.
 fn exit_break(app: &AppHandle) {
     let (auto_restart, focus_min, break_min) = {
         let state = app.state::<AppState>();
@@ -811,7 +758,6 @@ fn tick_runtime(app: &AppHandle) {
     }
 }
 
-
 fn is_break_active(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
     let runtime = state.runtime.lock().unwrap();
@@ -819,43 +765,10 @@ fn is_break_active(app: &AppHandle) -> bool {
 }
 
 fn show_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_window("main") {
+    if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
-    }
-}
-
-fn tray_icon() -> Icon {
-    Icon::Raw(include_bytes!("../icons/tray.png").to_vec())
-}
-
-fn handle_lock_window_event(event: GlobalWindowEvent) {
-    let window = event.window();
-    let app = window.app_handle();
-    let label = window.label();
-
-    match event.event() {
-        WindowEvent::CloseRequested { api, .. } => {
-            if label == "main" {
-                api.prevent_close();
-                let _ = window.hide();
-            } else if label.starts_with(LOCK_PREFIX) {
-                let state = app.state::<AppState>();
-                let runtime = state.runtime.lock().unwrap();
-                if runtime.phase == Phase::Break && !runtime.allow_lock_close {
-                    api.prevent_close();
-                }
-            }
-        }
-        WindowEvent::Focused(false) => {
-            if label.starts_with(LOCK_PREFIX) && is_break_active(&app) {
-                let _ = window.show();
-                let _ = window.set_always_on_top(true);
-                let _ = window.set_focus();
-            }
-        }
-        _ => {}
     }
 }
 
@@ -916,7 +829,6 @@ fn set_today_tasks(app: AppHandle, tasks: Vec<String>) -> Result<Vec<String>, St
     if tasks.len() > 3 {
         return Err("今日重要事项最多 3 件".to_string());
     }
-    // Preserve slot positions (including empty strings) so task_statuses stay aligned.
     let mut slots: Vec<String> = tasks.into_iter().map(|t| t.trim().to_string()).collect();
     slots.resize(3, String::new());
 
@@ -924,7 +836,6 @@ fn set_today_tasks(app: AppHandle, tasks: Vec<String>) -> Result<Vec<String>, St
     {
         let mut persistent = state.persistent.lock().unwrap();
         ensure_today_fresh(&mut persistent);
-        // Reset status for any slot whose text was cleared.
         for (i, text) in slots.iter().enumerate() {
             if text.is_empty() {
                 persistent.task_statuses[i] = "none".to_string();
@@ -943,7 +854,6 @@ fn set_task_status(app: AppHandle, index: usize, status: String) -> Snapshot {
         let state = app.state::<AppState>();
         let mut persistent = state.persistent.lock().unwrap();
         ensure_today_fresh(&mut persistent);
-        // Only set if the slot actually has text.
         if !persistent.today_tasks[index].is_empty() {
             persistent.task_statuses[index] = status;
             let _ = persist_state(&app, &persistent);
@@ -990,9 +900,10 @@ fn exit_break_lock(app: AppHandle) -> Snapshot {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
         .setup(|app| {
-            let app_handle = app.handle();
+            let app_handle = app.handle().clone();
             let persistent = load_persistent_state(&app_handle);
             let quote = current_quote(&persistent);
 
@@ -1010,83 +921,129 @@ fn main() {
                 tick_runtime(&app_clone);
             });
 
-            let tray_app = app_handle.clone();
-            let tray = SystemTray::new()
-                .with_icon(tray_icon())
-                .with_menu(build_tray_menu(Phase::Idle, false, 0, true, &[], ""))
-                .with_tooltip("Focus Lock")
-                .on_event(move |event| match event {
-                    SystemTrayEvent::LeftClick { .. } => show_main_window(&tray_app),
-                    SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
-                        "start" => {
-                            let state = tray_app.state::<AppState>();
-                            let (focus_min, break_min) = {
-                                let p = state.persistent.lock().unwrap();
-                                (p.settings.focus_minutes, p.settings.break_minutes)
-                            };
-                            let _ = begin_focus(&tray_app, focus_min, break_min);
-                        }
-                        "pause" => {
-                            let state = tray_app.state::<AppState>();
-                            let mut runtime = state.runtime.lock().unwrap();
-                            if runtime.phase == Phase::Focus {
-                                runtime.paused = true;
-                                drop(runtime);
-                                emit_snapshot(&tray_app);
-                            }
-                        }
-                        "resume" => {
-                            let state = tray_app.state::<AppState>();
-                            let mut runtime = state.runtime.lock().unwrap();
-                            if runtime.phase == Phase::Focus {
-                                runtime.paused = false;
-                                runtime.last_tick = Instant::now();
-                                drop(runtime);
-                                emit_snapshot(&tray_app);
-                            }
-                        }
-                        "cancel" => transition_to_idle(&tray_app),
-                        "end_break" => exit_break(&tray_app),
-                        id if id.starts_with("task_") => {
-                            if let Ok(index) = id["task_".len()..].parse::<usize>() {
+            let initial_menu = build_tray_menu(&app_handle, Phase::Idle, false, 0, true, &[], "")?;
+
+            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+
+            let tray_builder = {
+                let tray_app = app_handle.clone();
+                TrayIconBuilder::with_id("main-tray")
+                    .icon(tray_icon)
+                    .menu(&initial_menu)
+                    .tooltip("Focus Lock")
+                    .on_menu_event(move |_app, event| {
+                        match event.id.as_ref() {
+                            "start" => {
                                 let state = tray_app.state::<AppState>();
-                                let mut persistent = state.persistent.lock().unwrap();
-                                ensure_today_fresh(&mut persistent);
-                                if index < 3 && !persistent.today_tasks[index].is_empty() {
-                                    let next = match persistent.task_statuses[index].as_str() {
-                                        "none"  => "doing",
-                                        "doing" => "done",
-                                        _       => "none",
-                                    };
-                                    persistent.task_statuses[index] = next.to_string();
-                                    let _ = persist_state(&tray_app, &persistent);
-                                }
-                                drop(persistent);
-                                emit_snapshot(&tray_app);
+                                let (focus_min, break_min) = {
+                                    let p = state.persistent.lock().unwrap();
+                                    (p.settings.focus_minutes, p.settings.break_minutes)
+                                };
+                                let _ = begin_focus(&tray_app, focus_min, break_min);
                             }
+                            "pause" => {
+                                let state = tray_app.state::<AppState>();
+                                let mut runtime = state.runtime.lock().unwrap();
+                                if runtime.phase == Phase::Focus {
+                                    runtime.paused = true;
+                                    drop(runtime);
+                                    emit_snapshot(&tray_app);
+                                }
+                            }
+                            "resume" => {
+                                let state = tray_app.state::<AppState>();
+                                let mut runtime = state.runtime.lock().unwrap();
+                                if runtime.phase == Phase::Focus {
+                                    runtime.paused = false;
+                                    runtime.last_tick = Instant::now();
+                                    drop(runtime);
+                                    emit_snapshot(&tray_app);
+                                }
+                            }
+                            "cancel" => transition_to_idle(&tray_app),
+                            "end_break" => exit_break(&tray_app),
+                            id if id.starts_with("task_") => {
+                                if let Ok(index) = id["task_".len()..].parse::<usize>() {
+                                    let state = tray_app.state::<AppState>();
+                                    let mut persistent = state.persistent.lock().unwrap();
+                                    ensure_today_fresh(&mut persistent);
+                                    if index < 3 && !persistent.today_tasks[index].is_empty() {
+                                        let next = match persistent.task_statuses[index].as_str() {
+                                            "none" => "doing",
+                                            "doing" => "done",
+                                            _ => "none",
+                                        };
+                                        persistent.task_statuses[index] = next.to_string();
+                                        let _ = persist_state(&tray_app, &persistent);
+                                    }
+                                    drop(persistent);
+                                    emit_snapshot(&tray_app);
+                                }
+                            }
+                            "show" => show_main_window(&tray_app),
+                            "about" => {
+                                show_main_window(&tray_app);
+                                let _ = tray_app.emit("open://about", ());
+                            }
+                            "quit" => {
+                                close_lock_windows(&tray_app);
+                                std::process::exit(0);
+                            }
+                            _ => {}
                         }
-                        "show" => show_main_window(&tray_app),
-                        "about" => {
-                            show_main_window(&tray_app);
-                            let _ = tray_app.emit_all("open://about", ());
+                    })
+            };
+
+            let tray_builder = {
+                let tray_app2 = app_handle.clone();
+                tray_builder.on_tray_icon_event(move |_tray, event| {
+                    if matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
                         }
-                        "quit" => {
-                            close_lock_windows(&tray_app);
-                            std::process::exit(0);
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                });
+                    ) {
+                        show_main_window(&tray_app2);
+                    }
+                })
+            };
 
             #[cfg(target_os = "macos")]
-            let tray = tray.with_icon_as_template(true);
+            let tray_builder = tray_builder.icon_as_template(true);
 
-            tray.build(app)?;
+            tray_builder.build(app)?;
+
             tauri::async_runtime::spawn(refresh_online_quote(app_handle.clone()));
             Ok(())
         })
-        .on_window_event(handle_lock_window_event)
+        .on_window_event(|window, event| {
+            let app = window.app_handle();
+            let label = window.label();
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    if label == "main" {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else if label.starts_with(LOCK_PREFIX) {
+                        let state = app.state::<AppState>();
+                        let runtime = state.runtime.lock().unwrap();
+                        if runtime.phase == Phase::Break && !runtime.allow_lock_close {
+                            api.prevent_close();
+                        }
+                    }
+                }
+                WindowEvent::Focused(false) => {
+                    if label.starts_with(LOCK_PREFIX) && is_break_active(app) {
+                        let _ = window.show();
+                        let _ = window.set_always_on_top(true);
+                        let _ = window.set_focus();
+                    }
+                }
+                _ => {}
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             start_pomodoro,
@@ -1103,7 +1060,6 @@ fn main() {
         .expect("failed to build tauri application")
         .run(|app, event| {
             if let RunEvent::Ready = event {
-                // Sync launch-at-login plist / registry with saved setting.
                 let launch = {
                     let state = app.state::<AppState>();
                     let persistent = state.persistent.lock().unwrap();
