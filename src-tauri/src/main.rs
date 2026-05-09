@@ -821,72 +821,7 @@ fn show_main_window(app: &AppHandle) {
 }
 
 fn tray_icon() -> Icon {
-    // 22×22 clock face: ring + hour hand (10 o'clock) + minute hand (12 o'clock) + center dot.
-    // All geometry uses sub-pixel coverage so it renders cleanly on Retina / HiDPI.
-    // RGB = black; macOS template mode re-colors via alpha only.
-    const SIZE: u32 = 22;
-    let mut rgba = vec![0_u8; (SIZE * SIZE * 4) as usize];
-
-    let cx = SIZE as f32 / 2.0;
-    let cy = SIZE as f32 / 2.0;
-    let outer_r: f32 = cx - 1.2; // 9.8
-    let inner_r: f32 = outer_r - 1.6; // 8.2
-    let ring_mid = (outer_r + inner_r) / 2.0;
-    let ring_half = (outer_r - inner_r) / 2.0;
-
-    // Minute hand: 12 o'clock → direction (0, -1)
-    let (min_dx, min_dy): (f32, f32) = (0.0, -1.0);
-    let min_len = inner_r * 0.87; // 7.1
-
-    // Hour hand: 10 o'clock → 300° CW from 12 → (-sin60°, -cos60°)
-    let (hour_dx, hour_dy): (f32, f32) = (-0.866, -0.5);
-    let hour_len = inner_r * 0.60; // 4.9
-
-    let hand_hw = 0.72_f32; // hand half-width
-
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let px = x as f32 + 0.5 - cx;
-            let py = y as f32 + 0.5 - cy;
-            let d = (px * px + py * py).sqrt();
-            let idx = ((y * SIZE + x) * 4) as usize;
-
-            // Ring coverage
-            let mut a = ((ring_half + 0.6 - (d - ring_mid).abs()) / 0.6).clamp(0.0, 1.0);
-
-            if d < outer_r {
-                // Minute hand
-                let t = px * min_dx + py * min_dy;
-                let p = (px * min_dy - py * min_dx).abs();
-                if t >= 0.0 && t <= min_len {
-                    a = a.max(((hand_hw + 0.5 - p) / 0.5).clamp(0.0, 1.0));
-                }
-
-                // Hour hand
-                let t = px * hour_dx + py * hour_dy;
-                let p = (px * hour_dy - py * hour_dx).abs();
-                if t >= 0.0 && t <= hour_len {
-                    a = a.max(((hand_hw + 0.5 - p) / 0.5).clamp(0.0, 1.0));
-                }
-
-                // Center dot
-                if d < 1.5 {
-                    a = 1.0;
-                }
-            }
-
-            rgba[idx]     = 0;
-            rgba[idx + 1] = 0;
-            rgba[idx + 2] = 0;
-            rgba[idx + 3] = (a * 255.0) as u8;
-        }
-    }
-
-    Icon::Rgba {
-        rgba,
-        width: SIZE,
-        height: SIZE,
-    }
+    Icon::Raw(include_bytes!("../icons/tray.png").to_vec())
 }
 
 fn handle_lock_window_event(event: GlobalWindowEvent) {
