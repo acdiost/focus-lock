@@ -596,8 +596,14 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
     let monitors = main_window.available_monitors()?;
     for (index, monitor) in monitors.into_iter().enumerate() {
         let label = format!("{LOCK_PREFIX}{index}");
+        let scale = monitor.scale_factor();
         let size = monitor.size();
         let position = monitor.position();
+        // size/position are in physical pixels; inner_size/position expect logical points.
+        let w = size.width as f64 / scale;
+        let h = size.height as f64 / scale;
+        let x = position.x as f64 / scale;
+        let y = position.y as f64 / scale;
         let window =
             WindowBuilder::new(app, label.clone(), WindowUrl::App("index.html#lock".into()))
                 .decorations(false)
@@ -606,8 +612,8 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
                 .skip_taskbar(true)
                 .visible(false)
                 .title("Focus Lock Break")
-                .inner_size(size.width as f64, size.height as f64)
-                .position(position.x as f64, position.y as f64)
+                .inner_size(w, h)
+                .position(x, y)
                 .build()?;
 
         let _ = window.set_always_on_top(true);
