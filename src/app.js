@@ -276,7 +276,7 @@ function applySettings(snapshot) {
 }
 
 const STATUS_CYCLE = { none: "doing", doing: "done", done: "none" };
-const STATUS_ICON = { none: "○", doing: "▶", done: "✓" };
+const STATUS_ICON = { none: "○", doing: "◑", done: "✓" };
 
 function applyTasks(snapshot) {
   if (!tasksDirty) {
@@ -294,6 +294,7 @@ function applyTasks(snapshot) {
     btn.dataset.status = status;
     btn.textContent = STATUS_ICON[status] ?? "○";
     btn.disabled = !hasText;
+    btn.closest(".task-item")?.setAttribute("data-status", hasText ? status : "none");
   });
 }
 

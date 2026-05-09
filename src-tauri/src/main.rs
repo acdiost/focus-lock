@@ -315,7 +315,7 @@ fn build_tray_menu(
                 continue;
             }
             let icon = match status_str.as_str() {
-                "doing" => "▶",
+                "doing" => "◑",
                 "done"  => "✓",
                 _       => "○",
             };
