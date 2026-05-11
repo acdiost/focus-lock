@@ -1,6 +1,6 @@
 [package]
 name = "focus-lock"
-version = "2.0.0"
+version = "2.0.2"
 description = "Pomodoro timer with multi-display break lock for macOS and Windows"
 authors = ["Acdiost"]
 license = ""
