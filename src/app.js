@@ -53,7 +53,7 @@ const STRINGS = {
     aboutVersionPrefix: "版本",
     aboutDesc: "番茄时钟 + 休息强制锁定<br>工作时专注，休息时强制离开屏幕。",
     aboutGithub: "在 GitHub 上查看源码",
-    lockTag: "休息时间",
+    lockTag: "放松时间",
     lockStatus: "离开桌面。喝水，站起来，等休息结束。",
     lockTasksHeading: "今日重要事项",
     lockQuoteHeading: "一言",
@@ -162,8 +162,6 @@ const els = {
   focusMinutes: document.querySelector("#focus-minutes"),
   breakMinutes: document.querySelector("#break-minutes"),
   onlineQuote: document.querySelector("#online-quote"),
-  waterReminder: document.querySelector("#water-reminder"),
-  standReminder: document.querySelector("#stand-reminder"),
   autoRestart: document.querySelector("#auto-restart"),
   forceBreak: document.querySelector("#force-break"),
   launchOnLogin: document.querySelector("#launch-on-login"),
@@ -255,12 +253,8 @@ function quoteCopy(quote) {
   return `"${quote.text}"${meta}`;
 }
 
-function reminderPool(snapshot) {
-  const reminders = [];
-  if (snapshot.settings.enableWaterReminder) reminders.push(T.waterReminder);
-  if (snapshot.settings.enableStandReminder) reminders.push(T.standReminder);
-  if (reminders.length === 0) reminders.push(T.defaultReminder);
-  return reminders;
+function reminderPool() {
+  return [T.waterReminder, T.standReminder];
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────────
@@ -270,8 +264,6 @@ function applySettings(snapshot) {
   els.focusMinutes.value = snapshot.settings.focusMinutes;
   els.breakMinutes.value = snapshot.settings.breakMinutes;
   els.onlineQuote.checked = snapshot.settings.enableOnlineQuote;
-  els.waterReminder.checked = snapshot.settings.enableWaterReminder;
-  els.standReminder.checked = snapshot.settings.enableStandReminder;
   els.autoRestart.checked = snapshot.settings.autoRestart;
   els.forceBreak.checked = snapshot.settings.forceBreak;
   els.launchOnLogin.checked = snapshot.settings.launchOnLogin;
@@ -315,7 +307,7 @@ function renderMain(snapshot) {
 }
 
 function renderLock(snapshot) {
-  const reminders = reminderPool(snapshot);
+  const reminders = reminderPool();
   els.lockCountdown.textContent = formatDuration(snapshot.remainingSeconds);
   els.lockStatus.textContent = T.lockStatus;
   els.lockQuote.textContent = quoteCopy(snapshot.quote);
@@ -366,8 +358,6 @@ async function saveSettings() {
       focusMinutes: Number(els.focusMinutes.value) || 25,
       breakMinutes: Number(els.breakMinutes.value) || 5,
       enableOnlineQuote: els.onlineQuote.checked,
-      enableWaterReminder: els.waterReminder.checked,
-      enableStandReminder: els.standReminder.checked,
       autoRestart: els.autoRestart.checked,
       forceBreak: els.forceBreak.checked,
       launchOnLogin: els.launchOnLogin.checked,
@@ -404,8 +394,6 @@ function bindEvents() {
             focusMinutes: Number(els.focusMinutes.value) || 25,
             breakMinutes: Number(els.breakMinutes.value) || 5,
             enableOnlineQuote: els.onlineQuote.checked,
-            enableWaterReminder: els.waterReminder.checked,
-            enableStandReminder: els.standReminder.checked,
             autoRestart: els.autoRestart.checked,
             forceBreak: els.forceBreak.checked,
             launchOnLogin: els.launchOnLogin.checked,
@@ -420,8 +408,7 @@ function bindEvents() {
     [els.focusMinutes, els.breakMinutes].forEach((el) =>
       el.addEventListener("input", () => { settingsDirty = true; })
     );
-    [els.onlineQuote, els.waterReminder, els.standReminder,
-     els.autoRestart, els.forceBreak, els.launchOnLogin].forEach((el) =>
+    [els.onlineQuote, els.autoRestart, els.forceBreak, els.launchOnLogin].forEach((el) =>
       el.addEventListener("change", () => { settingsDirty = true; })
     );
     els.taskInputs.forEach((input) =>
@@ -524,7 +511,7 @@ async function init() {
     state.reminderTimer = setInterval(() => {
       if (!state.snapshot) return;
       state.reminderIndex += 1;
-      const reminders = reminderPool(state.snapshot);
+      const reminders = reminderPool();
       els.lockReminder.textContent = reminders[state.reminderIndex % reminders.length];
     }, 6000);
   }

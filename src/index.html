@@ -12,14 +12,14 @@
       <header class="app-header">
         <span class="app-title">Focus Lock</span>
         <span class="app-desc" data-i18n="appDesc">番茄时钟 · 休息锁定</span>
-        <button id="lang-btn" class="lang-btn">EN</button>
+        <button id="lang-btn" data-i18n="langToggle" class="lang-btn">EN</button>
         <button id="about-btn" class="about-btn" data-i18n="aboutBtn">关于</button>
       </header>
 
       <dialog id="about-dialog">
         <div class="about-inner">
           <button id="about-close" class="about-close">✕</button>
-          <div class="about-logo">F</div>
+          <div class="about-logo">FL</div>
           <h2 class="about-name">Focus Lock</h2>
           <p class="about-version">版本 0.1.0</p>
           <p class="about-desc" data-i18n-html="aboutDesc">番茄时钟 + 休息强制锁定<br>工作时专注，休息时强制离开屏幕。</p>
@@ -79,14 +79,6 @@
               <span data-i18n="toggleOnlineQuote">启用在线一言刷新</span>
             </label>
             <label class="toggle">
-              <input id="water-reminder" type="checkbox" />
-              <span data-i18n="toggleWater">展示喝水提醒</span>
-            </label>
-            <label class="toggle">
-              <input id="stand-reminder" type="checkbox" />
-              <span data-i18n="toggleStand">展示站立活动提醒</span>
-            </label>
-            <label class="toggle">
               <input id="auto-restart" type="checkbox" />
               <span data-i18n="toggleAutoRestart">休息结束后自动开始下一轮</span>
             </label>
@@ -131,7 +123,7 @@
       <div class="lock-content">
         <p id="lock-time" class="lock-time"></p>
         <p id="lock-date" class="lock-date"></p>
-        <p class="lock-tag" data-i18n="lockTag">休息时间</p>
+        <p class="lock-tag" data-i18n="lockTag">放松时间</p>
         <h1 id="lock-countdown">05:00</h1>
         <p id="lock-status" data-i18n="lockStatus">离开屏幕，喝水，站起来活动一下。</p>
         <div class="lock-panels">

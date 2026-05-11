@@ -30,8 +30,6 @@ struct Settings {
     focus_minutes: u64,
     break_minutes: u64,
     enable_online_quote: bool,
-    enable_water_reminder: bool,
-    enable_stand_reminder: bool,
     auto_restart: bool,
     #[serde(default)]
     launch_on_login: bool,
@@ -49,8 +47,6 @@ impl Default for Settings {
             focus_minutes: 25,
             break_minutes: 5,
             enable_online_quote: true,
-            enable_water_reminder: true,
-            enable_stand_reminder: true,
             auto_restart: false,
             launch_on_login: false,
             force_break: true,
@@ -884,8 +880,6 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
         persistent.settings.focus_minutes = settings.focus_minutes.clamp(1, 180);
         persistent.settings.break_minutes = settings.break_minutes.clamp(1, 60);
         persistent.settings.enable_online_quote = settings.enable_online_quote;
-        persistent.settings.enable_water_reminder = settings.enable_water_reminder;
-        persistent.settings.enable_stand_reminder = settings.enable_stand_reminder;
         persistent.settings.auto_restart = settings.auto_restart;
         persistent.settings.launch_on_login = settings.launch_on_login;
         persistent.settings.force_break = settings.force_break;
