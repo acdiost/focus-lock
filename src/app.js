@@ -178,6 +178,8 @@ const els = {
   cancelBtn: document.querySelector("#cancel-btn"),
   saveSettingsBtn: document.querySelector("#save-settings-btn"),
   saveTasksBtn: document.querySelector("#save-tasks-btn"),
+  lockTime: document.querySelector("#lock-time"),
+  lockDate: document.querySelector("#lock-date"),
   lockCountdown: document.querySelector("#lock-countdown"),
   lockStatus: document.querySelector("#lock-status"),
   lockTasks: document.querySelector("#lock-tasks"),
@@ -511,6 +513,14 @@ async function init() {
   bindEvents();
   await loadSnapshot();
   if (isLockView) {
+    const updateClock = () => {
+      const now = new Date();
+      els.lockTime.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      els.lockDate.textContent = now.toLocaleDateString([], { year: "numeric", month: "long", day: "numeric", weekday: "long" });
+    };
+    updateClock();
+    setInterval(updateClock, 1000);
+
     state.reminderTimer = setInterval(() => {
       if (!state.snapshot) return;
       state.reminderIndex += 1;
