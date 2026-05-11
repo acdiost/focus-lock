@@ -565,6 +565,12 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
                 .position(x, y)
                 .build()?;
 
+        // Correct with exact physical-pixel values: avoids 1-2px rounding errors
+        // caused by dividing physical coords by a fractional scale factor, which
+        // on Windows dual-monitor setups with mismatched DPI causes edge flicker.
+        let _ = window.set_size(*size);
+        let _ = window.set_position(*position);
+
         let _ = window.set_always_on_top(true);
         let _ = window.set_focus();
         let _ = window.show();
