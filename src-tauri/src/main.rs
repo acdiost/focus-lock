@@ -467,12 +467,80 @@ fn current_quote(persistent: &PersistentState) -> Quote {
         .unwrap_or_else(|| local_quote_for_seed(local_quote_seed()))
 }
 
-// Raise a lock window above the macOS menu bar and hide the menu bar + dock.
-// Window level 1000 = NSScreenSaverWindowLevel. Presentation flags 186 =
+// Synchronously hide the macOS menu bar and dock before any lock window is shown.
+// Blocks the calling (timer) thread until the main thread has applied the options.
+// Presentation flags 186 =
 // HideDock(2)|HideMenuBar(8)|DisableAppleMenu(16)|DisableForceQuit(32)|DisableHideApplication(128)
 #[cfg(target_os = "macos")]
-fn macos_lock_begin(app: &AppHandle, label: String) {
+fn macos_hide_chrome_sync(app: &AppHandle) {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let _ = app.run_on_main_thread(move || unsafe {
+        #[allow(unused_imports)]
+        use objc::{class, msg_send, sel, sel_impl};
+        use objc::runtime::Object;
+        let ns_app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![ns_app, setPresentationOptions: 186_u64];
+        let _ = tx.send(());
+    });
+    let _ = rx.recv();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_hide_chrome_sync(_app: &AppHandle) {}
+
+// Configure and show all lock windows in a single main-thread dispatch.
+// Called after macos_hide_chrome_sync so the menu bar is already gone.
+// Window level 1000 = NSScreenSaverWindowLevel.
+// Collection behavior 81 = CanJoinAllSpaces(1)|Stationary(16)|IgnoresCycle(64).
+// Background #fdf9f5 matches the CSS lock-shell background exactly.
+#[cfg(target_os = "macos")]
+fn macos_show_locks(app: &AppHandle, labels: Vec<String>) {
     let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || unsafe {
+        #[allow(unused_imports)]
+        use objc::{class, msg_send, sel, sel_impl};
+        use objc::runtime::Object;
+
+        let bg: *mut Object = msg_send![class!(NSColor),
+            colorWithRed: 0.992_f64
+            green:        0.976_f64
+            blue:         0.961_f64
+            alpha:        1.0_f64];
+
+        // Phase 1: configure all windows before any becomes visible.
+        let mut ptrs: Vec<*mut Object> = Vec::new();
+        for label in &labels {
+            let Some(w) = app2.get_webview_window(label) else { continue };
+            let Ok(raw) = w.ns_window() else { continue };
+            let ptr = raw as *mut Object;
+            let _: () = msg_send![ptr, setBackgroundColor: bg];
+            let _: () = msg_send![ptr, setOpaque: 1_i8];
+            let _: () = msg_send![ptr, setCollectionBehavior: 81_u64];
+            let _: () = msg_send![ptr, setLevel: 1000_i64];
+            ptrs.push(ptr);
+        }
+
+        // Phase 2: show all windows now that levels are set.
+        for &ptr in &ptrs {
+            let _: () = msg_send![ptr, orderFrontRegardless];
+        }
+
+        // Phase 3: keyboard focus on the primary monitor's window.
+        if let Some(&ptr) = ptrs.first() {
+            let _: () = msg_send![ptr, makeKeyWindow];
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_show_locks(_app: &AppHandle, _labels: Vec<String>) {}
+
+// Re-apply NSScreenSaverWindowLevel after a focus loss that may have been
+// triggered by Tauri's set_always_on_top() resetting the level to 3.
+#[cfg(target_os = "macos")]
+fn macos_relevel_lock(app: &AppHandle, label: &str) {
+    let app2 = app.clone();
+    let label = label.to_string();
     let _ = app.run_on_main_thread(move || unsafe {
         #[allow(unused_imports)]
         use objc::{class, msg_send, sel, sel_impl};
@@ -480,15 +548,15 @@ fn macos_lock_begin(app: &AppHandle, label: String) {
         if let Some(w) = app2.get_webview_window(&label) {
             if let Ok(ptr) = w.ns_window() {
                 let _: () = msg_send![ptr as *mut Object, setLevel: 1000_i64];
+                let _: () = msg_send![ptr as *mut Object, orderFrontRegardless];
+                let _: () = msg_send![ptr as *mut Object, makeKeyWindow];
             }
         }
-        let ns_app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
-        let _: () = msg_send![ns_app, setPresentationOptions: 186_u64];
     });
 }
 
 #[cfg(not(target_os = "macos"))]
-fn macos_lock_begin(_app: &AppHandle, _label: String) {}
+fn macos_relevel_lock(_app: &AppHandle, _label: &str) {}
 
 #[cfg(target_os = "macos")]
 fn macos_lock_end(app: &AppHandle) {
@@ -540,6 +608,12 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
         return Ok(());
     };
     let monitors = main_window.available_monitors()?;
+
+    // On macOS: hide menu bar and dock before any window is created so there is
+    // no frame where the system chrome is visible behind the lock windows.
+    macos_hide_chrome_sync(app);
+
+    let mut labels: Vec<String> = Vec::new();
     for (index, monitor) in monitors.into_iter().enumerate() {
         let label = format!("{LOCK_PREFIX}{index}");
         let scale = monitor.scale_factor();
@@ -552,7 +626,6 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
         let window =
             WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::App("index.html#lock".into()))
                 .decorations(false)
-                .always_on_top(true)
                 .resizable(false)
                 .skip_taskbar(true)
                 .visible(false)
@@ -567,11 +640,20 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
         let _ = window.set_size(*size);
         let _ = window.set_position(*position);
 
-        let _ = window.set_always_on_top(true);
-        let _ = window.set_focus();
-        let _ = window.show();
-        macos_lock_begin(app, label.clone());
+        // On non-macOS platforms, use Tauri's window APIs directly.
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window.set_always_on_top(true);
+            let _ = window.set_focus();
+            let _ = window.show();
+        }
+
+        labels.push(label);
     }
+
+    // On macOS: configure NSWindow level + show all windows in one main-thread
+    // dispatch so no intermediate state is visible.
+    macos_show_locks(app, labels);
 
     Ok(())
 }
@@ -1036,9 +1118,17 @@ fn main() {
                 }
                 WindowEvent::Focused(false) => {
                     if label.starts_with(LOCK_PREFIX) && is_break_active(app) {
-                        let _ = window.show();
-                        let _ = window.set_always_on_top(true);
-                        let _ = window.set_focus();
+                        // On macOS the lock window stays visible at level 1000; only
+                        // re-raise and re-focus via ObjC to avoid Tauri's
+                        // set_always_on_top resetting the level to NSFloatingWindowLevel.
+                        #[cfg(target_os = "macos")]
+                        macos_relevel_lock(app, label);
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            let _ = window.show();
+                            let _ = window.set_always_on_top(true);
+                            let _ = window.set_focus();
+                        }
                     }
                 }
                 _ => {}
