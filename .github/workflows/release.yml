@@ -5,6 +5,13 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name (e.g. v2.0.3)'
+        required: true
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -62,8 +69,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: FocusLock ${{ github.ref_name }}
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: FocusLock ${{ github.event.inputs.tag || github.ref_name }}
           releaseBody: |
             See the assets below to download this version.
           releaseDraft: true
