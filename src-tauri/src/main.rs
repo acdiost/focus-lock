@@ -616,13 +616,8 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
     let mut labels: Vec<String> = Vec::new();
     for (index, monitor) in monitors.into_iter().enumerate() {
         let label = format!("{LOCK_PREFIX}{index}");
-        let scale = monitor.scale_factor();
         let size = monitor.size();
         let position = monitor.position();
-        let w = size.width as f64 / scale;
-        let h = size.height as f64 / scale;
-        let x = position.x as f64 / scale;
-        let y = position.y as f64 / scale;
         let window =
             WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::App("index.html#lock".into()))
                 .decorations(false)
@@ -630,8 +625,9 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
                 .skip_taskbar(true)
                 .visible(false)
                 .title("Focus Lock Break")
-                .inner_size(w, h)
-                .position(x, y)
+                .shadow(false)
+                .inner_size(0.0, 0.0)
+                .position(1.0, 1.0)
                 .build()?;
 
         // Correct with exact physical-pixel values: avoids 1-2px rounding errors
