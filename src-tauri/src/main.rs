@@ -626,8 +626,8 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
                 .visible(false)
                 .title("Focus Lock Break")
                 .shadow(false)
-                .inner_size(0.0, 0.0)
-                .position(1.0, 1.0)
+                .inner_size(1.0, 1.0)
+                .position(0.0, 0.0)
                 .build()?;
 
         // Correct with exact physical-pixel values: avoids 1-2px rounding errors
