@@ -48,6 +48,12 @@ Open the DMG and drag **Focus Lock** into the **Applications** folder.
 
 > **First-launch notice**: because the app is not notarized by Apple, macOS will warn "developer cannot be verified".
 > Right-click the app in Finder → **Open** → click **Open** again. After that, double-click works normally.
+>
+> **"App is damaged and can't be opened"**: macOS Ventura and later may show this stricter error, where right-clicking no longer helps. Run the following command in Terminal to strip the quarantine flag, then double-click normally:
+>
+> ```bash
+> xattr -cr /Applications/Focus\ Lock.app
+> ```
 
 ### Windows (MSI)
 
