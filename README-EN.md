@@ -52,7 +52,7 @@ Open the DMG and drag **Focus Lock** into the **Applications** folder.
 > **"App is damaged and can't be opened"**: macOS Ventura and later may show this stricter error, where right-clicking no longer helps. Run the following command in Terminal to strip the quarantine flag, then double-click normally:
 >
 > ```bash
-> xattr -cr /Applications/Focus\ Lock.app
+> xattr -cr /Applications/FocusLock.app
 > ```
 
 ### Windows (MSI)

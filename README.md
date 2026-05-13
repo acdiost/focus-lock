@@ -51,7 +51,7 @@
 > **提示"已损坏，无法打开"**：macOS Ventura 及更新版本在某些情况下会显示更严格的提示，右键打开无效。在终端执行以下命令移除隔离标记，然后正常双击打开：
 >
 > ```bash
-> xattr -cr /Applications/Focus\ Lock.app
+> xattr -cr /Applications/FocusLock.app
 > ```
 
 ### Linux（AppImage / deb）
