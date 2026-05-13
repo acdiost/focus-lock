@@ -203,7 +203,7 @@ focus-lock/
 
 - App-level lock only, not a system-level screen lock. macOS is significantly hardened via elevated window level and hidden menu bar, but a determined user can still break out under extreme circumstances.
 - Hot-plugging a monitor during a break does not create a lock window for the new display; the lock will be recreated on the next break.
-- On Linux, fullscreen lock effectiveness depends on the window manager. Tiling WMs such as i3 or Sway may not fully prevent workspace switching.
+- On Linux, the lock screen uses `_NET_WM_STATE_FULLSCREEN` to cover the top panel and bottom dock (works on X11 and GNOME/Mutter Wayland). Pure Wayland compositors such as i3/Sway may not fully prevent workspace switching.
 - The Windows binary is unsigned; SmartScreen may prompt a warning on first install.
 
 ---

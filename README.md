@@ -196,7 +196,7 @@ focus-lock/
 
 - 应用级锁定，非系统级锁屏。macOS 已通过提升窗口层级和隐藏菜单栏缓解，但用户在极端操作下仍可能切出
 - 多屏热插拔不会动态更新锁屏窗口，需要等待当轮休息结束或手动取消后重新触发
-- Linux 上的全屏锁定效果依赖窗口管理器行为，部分平台（如 i3/Sway）可能无法完全阻止切换
+- Linux 上通过 `_NET_WM_STATE_FULLSCREEN` 覆盖顶部状态栏和底部 Dock（X11 及 GNOME/Mutter Wayland 下有效）；纯 Wayland 合成器（如 i3/Sway）可能无法完全阻止切换
 - Windows 未配置代码签名，安装时 SmartScreen 可能弹出警告
 
 ---

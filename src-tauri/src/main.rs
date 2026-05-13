@@ -642,6 +642,11 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
             let _ = window.set_always_on_top(true);
             let _ = window.set_focus();
             let _ = window.show();
+            // On Linux, _NET_WM_STATE_ABOVE is not enough to cover dock/panel windows
+            // (_NET_WM_WINDOW_TYPE_DOCK). Setting fullscreen triggers
+            // _NET_WM_STATE_FULLSCREEN which X11/Mutter places above all panels.
+            #[cfg(target_os = "linux")]
+            let _ = window.set_fullscreen(true);
         }
 
         labels.push(label);
