@@ -555,9 +555,6 @@ fn macos_relevel_lock(app: &AppHandle, label: &str) {
     });
 }
 
-#[cfg(not(target_os = "macos"))]
-fn macos_relevel_lock(_app: &AppHandle, _label: &str) {}
-
 #[cfg(target_os = "macos")]
 fn macos_lock_end(app: &AppHandle) {
     let _ = app.run_on_main_thread(|| unsafe {
@@ -572,7 +569,56 @@ fn macos_lock_end(app: &AppHandle) {
 #[cfg(not(target_os = "macos"))]
 fn macos_lock_end(_app: &AppHandle) {}
 
+// Stores the X11 Display pointer (as usize) while a keyboard grab is active.
+// Zero means no grab. Guarded by a Mutex so grab/ungrab are serialized.
+#[cfg(target_os = "linux")]
+static LINUX_X11_GRAB: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+// Grab all keyboard input at the X11 level so window-manager shortcuts like
+// Alt+Tab never reach the WM during a break. owner_events=True means our own
+// windows still receive key events normally. No-op on pure Wayland (no DISPLAY).
+#[cfg(target_os = "linux")]
+fn linux_keyboard_grab() {
+    if std::env::var("DISPLAY").is_err() { return; }
+    unsafe {
+        let display = x11::xlib::XOpenDisplay(std::ptr::null());
+        if display.is_null() { return; }
+        let screen = x11::xlib::XDefaultScreen(display);
+        let root   = x11::xlib::XRootWindow(display, screen);
+        for _ in 0..5 {
+            let rc = x11::xlib::XGrabKeyboard(
+                display, root, 1,
+                x11::xlib::GrabModeAsync, x11::xlib::GrabModeAsync,
+                x11::xlib::CurrentTime,
+            );
+            if rc == 0 { // GrabSuccess
+                x11::xlib::XFlush(display);
+                *LINUX_X11_GRAB.lock().unwrap() = display as usize;
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        x11::xlib::XCloseDisplay(display);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_keyboard_ungrab() {
+    let ptr = { let mut g = LINUX_X11_GRAB.lock().unwrap(); let v = *g; *g = 0; v };
+    if ptr != 0 {
+        unsafe {
+            let d = ptr as *mut x11::xlib::Display;
+            x11::xlib::XUngrabKeyboard(d, x11::xlib::CurrentTime);
+            x11::xlib::XFlush(d);
+            x11::xlib::XCloseDisplay(d);
+        }
+    }
+}
+
 fn close_lock_windows(app: &AppHandle) {
+    #[cfg(target_os = "linux")]
+    linux_keyboard_ungrab();
+
     {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
@@ -655,6 +701,11 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
     // On macOS: configure NSWindow level + show all windows in one main-thread
     // dispatch so no intermediate state is visible.
     macos_show_locks(app, labels);
+
+    // On Linux/X11 grab the keyboard after all lock windows are visible so
+    // Alt+Tab and other WM shortcuts are intercepted before reaching the WM.
+    #[cfg(target_os = "linux")]
+    linux_keyboard_grab();
 
     Ok(())
 }

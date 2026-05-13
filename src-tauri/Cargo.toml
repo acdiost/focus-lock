@@ -1,6 +1,6 @@
 [package]
 name = "focus-lock"
-version = "2.0.3"
+version = "2.1.0"
 description = "Pomodoro timer with multi-display break lock for macOS, Windows, and Linux"
 authors = ["Acdiost"]
 license = ""
@@ -16,6 +16,9 @@ objc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11 = { version = "2", features = ["xlib"] }
 
 [dependencies]
 chrono = { version = "=0.4.38", features = ["clock", "serde"] }
