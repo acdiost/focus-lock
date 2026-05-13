@@ -1006,6 +1006,10 @@ fn main() {
 
             let initial_menu = build_tray_menu(&app_handle, Phase::Idle, false, 0, true, &[], "")?;
 
+            // Linux panels (GNOME etc.) are dark; use a white icon so it's visible.
+            #[cfg(target_os = "linux")]
+            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-linux.png"))?;
+            #[cfg(not(target_os = "linux"))]
             let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
 
             let tray_builder = {
@@ -1128,6 +1132,10 @@ fn main() {
                         {
                             let _ = window.show();
                             let _ = window.set_always_on_top(true);
+                            // On Linux, Alt+Tab can drop the window out of fullscreen;
+                            // re-assert it so the panel-cover is restored immediately.
+                            #[cfg(target_os = "linux")]
+                            let _ = window.set_fullscreen(true);
                             let _ = window.set_focus();
                         }
                     }

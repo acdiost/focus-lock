@@ -232,6 +232,54 @@ write_png(dst, 32, 32, canvas)
 TRAYEOF
 echo "✓ tray.png 已生成（黑色 template 模式）"
 
+# Linux 托盘图标（白色，适配 GNOME 等深色顶部状态栏）
+python3 - "$OUT_DIR/tray.png" "$OUT_DIR/tray-linux.png" << 'TRAYLINUXEOF'
+import sys, struct, zlib
+
+def read_png(path):
+    with open(path, 'rb') as f: data = f.read()
+    w = struct.unpack('>I', data[16:20])[0]
+    h = struct.unpack('>I', data[20:24])[0]
+    raw = b''
+    i = 8
+    while i < len(data):
+        n = struct.unpack('>I', data[i:i+4])[0]
+        if data[i+4:i+8] == b'IDAT': raw += data[i+8:i+8+n]
+        i += 12 + n
+    raw = zlib.decompress(raw)
+    stride = w * 4
+    rows, pos, prev = [], 0, bytes(stride)
+    for _ in range(h):
+        ft = raw[pos]; pos += 1
+        row = bytearray(raw[pos:pos+stride]); pos += stride
+        if ft == 1:
+            for x in range(4, stride): row[x] = (row[x]+row[x-4])&0xff
+        elif ft == 2:
+            row = bytearray((a+b)&0xff for a,b in zip(row,prev))
+        rows.append(bytes(row)); prev=bytes(row)
+    return w, h, rows
+
+def write_png(path, w, h, rows):
+    def chunk(name, d):
+        c=name+d; return struct.pack('>I',len(d))+c+struct.pack('>I',zlib.crc32(c)&0xffffffff)
+    raw = b''.join(b'\x00'+r for r in rows)
+    ihdr = struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)
+    with open(path, 'wb') as f:
+        f.write(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',ihdr)+chunk(b'IDAT',zlib.compress(raw,9))+chunk(b'IEND',b''))
+
+src, dst = sys.argv[1], sys.argv[2]
+w, h, rows = read_png(src)
+result = []
+for row in rows:
+    r2 = bytearray(row)
+    for x in range(w):
+        if r2[x*4+3] > 20:
+            r2[x*4]=r2[x*4+1]=r2[x*4+2]=255
+    result.append(bytes(r2))
+write_png(dst, w, h, result)
+TRAYLINUXEOF
+echo "✓ tray-linux.png 已生成（白色，适配 Linux 深色状态栏）"
+
 # ─────────────────────────────────────────────
 # 重建 icon.icns
 # ─────────────────────────────────────────────
