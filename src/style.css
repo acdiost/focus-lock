@@ -666,11 +666,40 @@ input[type="checkbox"] {
   font-weight: 500;
 }
 
-/* ── End-break button ──────────────────────────────── */
+/* ── Lock controls ─────────────────────────────────── */
+
+.lock-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.lock-media-btn {
+  min-width: 112px;
+  background: var(--text);
+  color: #fff;
+  border: 1px solid var(--text);
+  border-radius: 999px;
+  font-size: 0.86rem;
+  padding: 0.48rem 1rem;
+  box-shadow: none;
+}
+
+.lock-media-btn:not(:disabled):hover {
+  opacity: 0.86;
+}
+
+.lock-media-btn[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
 
 .end-break-btn {
   display: block;
-  margin: 20px auto 0;
+  margin: 0;
   background: transparent;
   color: rgba(26, 29, 35, 0.28);
   border: 1px solid rgba(26, 29, 35, 0.15);

@@ -4,6 +4,7 @@
 use std::{
     fs,
     path::PathBuf,
+    process::Command,
     sync::Mutex,
     thread,
     time::{Duration, Instant},
@@ -908,6 +909,60 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+fn run_media_command(program: &str, args: &[&str]) -> Result<(), String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|err| format!("failed to run {program}: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("{program} exited with status {}", output.status)
+        } else {
+            stderr
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn platform_set_system_mute(muted: bool) -> Result<(), String> {
+    let script = if muted {
+        "set volume output muted true"
+    } else {
+        "set volume output muted false"
+    };
+    run_media_command("osascript", &["-e", script])
+}
+
+#[cfg(target_os = "windows")]
+fn platform_set_system_mute(muted: bool) -> Result<(), String> {
+    let key = if muted { "{VOLUME_MUTE}" } else { "{VOLUME_MUTE}" };
+    run_media_command(
+        "powershell",
+        &[
+            "-NoProfile",
+            "-Command",
+            &format!("Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{key}')"),
+        ],
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn platform_set_system_mute(muted: bool) -> Result<(), String> {
+    let value = if muted { "1" } else { "0" };
+    let amixer_action = if muted { "mute" } else { "unmute" };
+    run_media_command("pactl", &["set-sink-mute", "@DEFAULT_SINK@", value])
+        .or_else(|_| run_media_command("amixer", &["-q", "set", "Master", amixer_action]))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn platform_set_system_mute(_muted: bool) -> Result<(), String> {
+    Err("system mute is not supported on this platform".to_string())
+}
+
 #[tauri::command]
 fn get_snapshot(app: AppHandle) -> Snapshot {
     build_snapshot(&app)
@@ -1030,6 +1085,11 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<Settings, String>
 fn exit_break_lock(app: AppHandle) -> Snapshot {
     exit_break(&app);
     build_snapshot(&app)
+}
+
+#[tauri::command]
+fn set_system_mute(muted: bool) -> Result<(), String> {
+    platform_set_system_mute(muted)
 }
 
 fn main() {
@@ -1205,6 +1265,7 @@ fn main() {
             get_settings,
             save_settings,
             exit_break_lock,
+            set_system_mute,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri application")

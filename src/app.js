@@ -58,6 +58,8 @@ const STRINGS = {
     lockTasksHeading: "今日重要事项",
     lockQuoteHeading: "一言",
     lockFallbackTask: "休息结束后，回来处理今天最重要的一件事。",
+    muteMediaBtn: "静音",
+    unmuteMediaBtn: "恢复声音",
     endBreakBtn: "提前结束休息",
     waterReminder: "现在去喝一杯水，让眼睛离开屏幕。",
     standReminder: "站起来活动一下，肩颈和腿部都需要切换姿势。",
@@ -117,6 +119,8 @@ const STRINGS = {
     lockTasksHeading: "Today's Focus",
     lockQuoteHeading: "Quote",
     lockFallbackTask: "When the break ends, come back and tackle the most important thing.",
+    muteMediaBtn: "Mute",
+    unmuteMediaBtn: "Restore Sound",
     endBreakBtn: "End Break Early",
     waterReminder: "Drink a glass of water and look away from the screen.",
     standReminder: "Stand up and move — your neck, shoulders and legs need a reset.",
@@ -138,6 +142,7 @@ const state = {
   reminderTimer: null,
   lang: "zh",
   appVersion: "",
+  systemMuted: false,
 };
 
 let T = STRINGS.zh;
@@ -183,6 +188,7 @@ const els = {
   lockTasks: document.querySelector("#lock-tasks"),
   lockQuote: document.querySelector("#lock-quote"),
   lockReminder: document.querySelector("#lock-reminder"),
+  muteMediaBtn: document.querySelector("#mute-media-btn"),
 };
 
 const isLockView = window.location.hash.startsWith("#lock");
@@ -218,11 +224,18 @@ function applyI18n() {
   if (versionEl && state.appVersion) {
     versionEl.textContent = `${T.aboutVersionPrefix} ${state.appVersion}`;
   }
+  if (isLockView) updateMuteUi();
   if (!isLockView && els.taskInputs[0]) {
     els.taskInputs.forEach((input, i) => {
       input.placeholder = T.taskPlaceholder(i);
     });
   }
+}
+
+function updateMuteUi() {
+  if (!els.muteMediaBtn) return;
+  els.muteMediaBtn.textContent = state.systemMuted ? T.unmuteMediaBtn : T.muteMediaBtn;
+  els.muteMediaBtn.setAttribute("aria-pressed", String(state.systemMuted));
 }
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
@@ -460,6 +473,17 @@ function bindEvents() {
   } else {
     els.endBreakBtn.addEventListener("click", async () => {
       try { await invoke("exit_break_lock"); } catch (_) {}
+    });
+    els.muteMediaBtn.addEventListener("click", async () => {
+      const nextMuted = !state.systemMuted;
+      try {
+        await invoke("set_system_mute", { muted: nextMuted });
+        state.systemMuted = nextMuted;
+        updateMuteUi();
+      } catch (err) {
+        els.muteMediaBtn.textContent = T.errOp(err);
+        setTimeout(updateMuteUi, 1800);
+      }
     });
     window.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && state.snapshot?.settings.forceBreak === false) {
