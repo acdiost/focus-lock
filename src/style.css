@@ -670,14 +670,15 @@ input[type="checkbox"] {
 
 .lock-controls {
   display: flex;
-  justify-content: space-between;
+  justify-content: center;
   align-items: center;
-  gap: 12px;
   margin-top: 18px;
-  flex-wrap: wrap;
 }
 
 .lock-media-btn {
+  position: fixed;
+  right: max(24px, env(safe-area-inset-right));
+  bottom: max(24px, env(safe-area-inset-bottom));
   min-width: 112px;
   background: var(--text);
   color: #fff;
@@ -699,7 +700,7 @@ input[type="checkbox"] {
 
 .end-break-btn {
   display: block;
-  margin: 0;
+  margin: 0 auto;
   background: transparent;
   color: rgba(26, 29, 35, 0.28);
   border: 1px solid rgba(26, 29, 35, 0.15);
