@@ -10,6 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "macos")]
+use std::{collections::HashMap, sync::OnceLock};
+
 use chrono::Local;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -468,93 +471,317 @@ fn current_quote(persistent: &PersistentState) -> Quote {
         .unwrap_or_else(|| local_quote_for_seed(local_quote_seed()))
 }
 
+#[cfg(target_os = "macos")]
+const MACOS_LOCK_COLLECTION_BEHAVIOR: u64 = 1 | 256 | (1 << 18);
+
+#[cfg(target_os = "macos")]
+const MACOS_LOCK_WINDOW_LEVEL: i64 = 1000;
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct MacosLockPanel {
+    panel: usize,
+    delegate: usize,
+    source_window: usize,
+}
+
+#[cfg(target_os = "macos")]
+static MACOS_LOCK_PANELS: OnceLock<Mutex<HashMap<String, MacosLockPanel>>> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+static MACOS_PANEL_DELEGATE_CLASS: OnceLock<usize> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+fn macos_lock_panels() -> &'static Mutex<HashMap<String, MacosLockPanel>> {
+    MACOS_LOCK_PANELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn macos_panel_did_resign_key(
+    _delegate: &objc::runtime::Object,
+    _selector: objc::runtime::Sel,
+    notification: *mut objc::runtime::Object,
+) {
+    unsafe {
+        use objc::{class, msg_send, sel, sel_impl};
+        use objc::runtime::Object;
+
+        let panel: *mut Object = msg_send![notification, object];
+        if panel.is_null() {
+            return;
+        }
+        let visible: i8 = msg_send![panel, isVisible];
+        if visible == 0 {
+            return;
+        }
+
+        let _: () = msg_send![panel, setCollectionBehavior: MACOS_LOCK_COLLECTION_BEHAVIOR];
+        let _: () = msg_send![panel, setLevel: MACOS_LOCK_WINDOW_LEVEL];
+        let _: () = msg_send![panel, orderFrontRegardless];
+        let ns_app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![ns_app, activateIgnoringOtherApps: 1_i8];
+        let _: () = msg_send![panel, makeKeyWindow];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_panel_delegate_class() -> &'static objc::runtime::Class {
+    let class_ptr = MACOS_PANEL_DELEGATE_CLASS.get_or_init(|| unsafe {
+        use objc::{sel, sel_impl};
+        use objc::declare::ClassDecl;
+        use objc::runtime::Class;
+
+        let superclass = Class::get("NSObject").expect("NSObject class is unavailable");
+        let mut declaration = ClassDecl::new("FocusLockPanelDelegate", superclass)
+            .expect("FocusLockPanelDelegate is already registered");
+        declaration.add_method(
+            sel!(windowDidResignKey:),
+            macos_panel_did_resign_key
+                as extern "C" fn(
+                    &objc::runtime::Object,
+                    objc::runtime::Sel,
+                    *mut objc::runtime::Object,
+                ),
+        );
+        declaration.register() as *const Class as usize
+    });
+    unsafe { &*(*class_ptr as *const objc::runtime::Class) }
+}
+
+struct SetupCleanupGuard<F: FnOnce()> {
+    cleanup: Option<F>,
+}
+
+impl<F: FnOnce()> SetupCleanupGuard<F> {
+    fn new(cleanup: F) -> Self {
+        Self {
+            cleanup: Some(cleanup),
+        }
+    }
+
+    fn commit(mut self) {
+        self.cleanup.take();
+    }
+}
+
+impl<F: FnOnce()> Drop for SetupCleanupGuard<F> {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MacPoint {
+    x: f64,
+    y: f64,
+}
+
+#[cfg(target_os = "macos")]
+unsafe impl objc::Encode for MacPoint {
+    fn encode() -> objc::Encoding {
+        unsafe { objc::Encoding::from_str("{CGPoint=dd}") }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MacSize {
+    width: f64,
+    height: f64,
+}
+
+#[cfg(target_os = "macos")]
+unsafe impl objc::Encode for MacSize {
+    fn encode() -> objc::Encoding {
+        unsafe { objc::Encoding::from_str("{CGSize=dd}") }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MacRect {
+    origin: MacPoint,
+    size: MacSize,
+}
+
+#[cfg(target_os = "macos")]
+unsafe impl objc::Encode for MacRect {
+    fn encode() -> objc::Encoding {
+        unsafe { objc::Encoding::from_str("{CGRect={CGPoint=dd}{CGSize=dd}}") }
+    }
+}
+
 // Synchronously hide the macOS menu bar and dock before any lock window is shown.
 // Blocks the calling (timer) thread until the main thread has applied the options.
 // Presentation flags 186 =
 // HideDock(2)|HideMenuBar(8)|DisableAppleMenu(16)|DisableForceQuit(32)|DisableHideApplication(128)
 #[cfg(target_os = "macos")]
-fn macos_hide_chrome_sync(app: &AppHandle) {
+fn macos_hide_chrome_sync(app: &AppHandle) -> tauri::Result<()> {
     let (tx, rx) = std::sync::mpsc::channel::<()>();
-    let _ = app.run_on_main_thread(move || unsafe {
+    app.run_on_main_thread(move || unsafe {
         #[allow(unused_imports)]
         use objc::{class, msg_send, sel, sel_impl};
         use objc::runtime::Object;
         let ns_app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        // Accessory applications are eligible to place overlay windows in
+        // full-screen Spaces owned by other applications. Merely hiding the
+        // Dock does not change a regular application's activation policy.
+        let _: i8 = msg_send![ns_app, setActivationPolicy: 1_i64];
         let _: () = msg_send![ns_app, setPresentationOptions: 186_u64];
         let _ = tx.send(());
-    });
-    let _ = rx.recv();
+    })?;
+    rx.recv().map_err(|_| tauri::Error::FailedToReceiveMessage)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn macos_hide_chrome_sync(_app: &AppHandle) {}
+fn macos_hide_chrome_sync(_app: &AppHandle) -> tauri::Result<()> {
+    Ok(())
+}
 
 // Configure and show all lock windows in a single main-thread dispatch.
 // Called after macos_hide_chrome_sync so the menu bar is already gone.
 // Window level 1000 = NSScreenSaverWindowLevel.
-// Collection behavior 81 = CanJoinAllSpaces(1)|Stationary(16)|IgnoresCycle(64).
+// Collection behavior 262401 = CanJoinAllSpaces(1)|FullScreenAuxiliary(256)
+//                            |CanJoinAllApplications(262144).
+// CanJoinAllApplications (macOS 13+) is the flag that permits system overlays
+// to join full-screen Spaces owned by other applications. CanJoinAllSpaces on
+// its own does not cross that application boundary.
 // Background #fdf9f5 matches the CSS lock-shell background exactly.
 #[cfg(target_os = "macos")]
-fn macos_show_locks(app: &AppHandle, labels: Vec<String>) {
+fn macos_show_locks(app: &AppHandle, labels: Vec<String>) -> tauri::Result<()> {
+    let (tx, rx) = std::sync::mpsc::channel::<tauri::Result<()>>();
     let app2 = app.clone();
-    let _ = app.run_on_main_thread(move || unsafe {
+    app.run_on_main_thread(move || unsafe {
         #[allow(unused_imports)]
         use objc::{class, msg_send, sel, sel_impl};
         use objc::runtime::Object;
 
-        let bg: *mut Object = msg_send![class!(NSColor),
-            colorWithRed: 0.992_f64
-            green:        0.976_f64
-            blue:         0.961_f64
-            alpha:        1.0_f64];
+        let result = (|| -> tauri::Result<()> {
+            let bg: *mut Object = msg_send![class!(NSColor),
+                colorWithRed: 0.992_f64
+                green:        0.976_f64
+                blue:         0.961_f64
+                alpha:        1.0_f64];
 
-        // Phase 1: configure all windows before any becomes visible.
-        let mut ptrs: Vec<*mut Object> = Vec::new();
-        for label in &labels {
-            let Some(w) = app2.get_webview_window(label) else { continue };
-            let Ok(raw) = w.ns_window() else { continue };
-            let ptr = raw as *mut Object;
-            let _: () = msg_send![ptr, setBackgroundColor: bg];
-            let _: () = msg_send![ptr, setOpaque: 1_i8];
-            let _: () = msg_send![ptr, setCollectionBehavior: 81_u64];
-            let _: () = msg_send![ptr, setLevel: 1000_i64];
-            ptrs.push(ptr);
-        }
+            // Phase 1: configure all windows before any becomes visible.
+            let mut panels: Vec<MacosLockPanel> = Vec::new();
+            for label in &labels {
+                let window = app2.get_webview_window(label).ok_or_else(|| {
+                    tauri::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("lock window {label} disappeared during setup"),
+                    ))
+                })?;
+                let tauri_window = window.ns_window()? as *mut Object;
 
-        // Phase 2: show all windows now that levels are set.
-        for &ptr in &ptrs {
-            let _: () = msg_send![ptr, orderFrontRegardless];
-        }
+                // Tauri creates NSWindow instances. AppKit only consistently admits
+                // floating NSPanel instances into another application's full-screen
+                // Space, so move the existing WKWebView into a native panel.
+                let frame: MacRect = msg_send![tauri_window, frame];
+                let content: *mut Object = msg_send![tauri_window, contentView];
+                let panel: *mut Object = msg_send![class!(NSPanel), alloc];
+                let panel: *mut Object = msg_send![panel, init];
+                if panel.is_null() {
+                    return Err(tauri::Error::Io(std::io::Error::other(
+                        "failed to create macOS lock panel",
+                    )));
+                }
+                let delegate: *mut Object = msg_send![macos_panel_delegate_class(), new];
+                let _: () = msg_send![panel, setStyleMask: 0_u64];
+                let _: () = msg_send![panel, setFrame: frame display: 0_i8];
+                let _: () = msg_send![panel, setContentView: content];
+                let _: () = msg_send![panel, setDelegate: delegate];
+                let _: () = msg_send![panel, setFloatingPanel: 1_i8];
+                let _: () = msg_send![panel, setBecomesKeyOnlyIfNeeded: 0_i8];
+                let _: () = msg_send![panel, setReleasedWhenClosed: 0_i8];
+                let _: () = msg_send![panel, setBackgroundColor: bg];
+                let _: () = msg_send![panel, setOpaque: 1_i8];
+                let _: () = msg_send![panel, setHidesOnDeactivate: 0_i8];
+                let _: () =
+                    msg_send![panel, setCollectionBehavior: MACOS_LOCK_COLLECTION_BEHAVIOR];
+                let _: () = msg_send![panel, setLevel: MACOS_LOCK_WINDOW_LEVEL];
+                let _: () = msg_send![tauri_window, orderOut: std::ptr::null::<Object>()];
+                let _: *mut Object = msg_send![tauri_window, retain];
+                let lock_panel = MacosLockPanel {
+                    panel: panel as usize,
+                    delegate: delegate as usize,
+                    source_window: tauri_window as usize,
+                };
+                macos_lock_panels()
+                    .lock()
+                    .unwrap()
+                    .insert(label.clone(), lock_panel);
+                panels.push(lock_panel);
+            }
 
-        // Phase 3: keyboard focus on the primary monitor's window.
-        if let Some(&ptr) = ptrs.first() {
-            let _: () = msg_send![ptr, makeKeyWindow];
+            // Phase 2: place the auxiliary windows in the current full-screen Space
+            // before activating the application. Activating while they are hidden
+            // can make AppKit switch to the main window's ordinary Space instead.
+            for panel in &panels {
+                let ptr = panel.panel as *mut Object;
+                let _: () = msg_send![ptr, orderFrontRegardless];
+            }
+
+            // A key window cannot take keyboard focus while its application is
+            // inactive, so activate only after the lock windows are visible.
+            let ns_app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+            let _: () = msg_send![ns_app, activateIgnoringOtherApps: 1_i8];
+
+            // Phase 3: keyboard focus on the primary monitor's window.
+            if let Some(panel) = panels.first() {
+                let ptr = panel.panel as *mut Object;
+                let _: () = msg_send![ptr, makeKeyWindow];
+            }
+            Ok(())
+        })();
+        let _ = tx.send(result);
+    })?;
+    rx.recv().map_err(|_| tauri::Error::FailedToReceiveMessage)?
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_show_locks(_app: &AppHandle, _labels: Vec<String>) -> tauri::Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_close_panels(app: &AppHandle) {
+    let panels: Vec<MacosLockPanel> = macos_lock_panels()
+        .lock()
+        .unwrap()
+        .drain()
+        .map(|(_, panel)| panel)
+        .collect();
+    let _ = app.run_on_main_thread(move || unsafe {
+        #[allow(unused_imports)]
+        use objc::{msg_send, sel, sel_impl};
+        use objc::runtime::Object;
+        for lock_panel in panels {
+            let panel = lock_panel.panel as *mut Object;
+            let delegate = lock_panel.delegate as *mut Object;
+            let source_window = lock_panel.source_window as *mut Object;
+            let _: () = msg_send![panel, setDelegate: std::ptr::null::<Object>()];
+            let content: *mut Object = msg_send![panel, contentView];
+            if !content.is_null() {
+                let _: () = msg_send![source_window, setContentView: content];
+            }
+            let _: () = msg_send![panel, orderOut: std::ptr::null::<Object>()];
+            let _: () = msg_send![panel, close];
+            let _: () = msg_send![panel, release];
+            let _: () = msg_send![delegate, release];
+            let _: () = msg_send![source_window, release];
         }
     });
 }
 
 #[cfg(not(target_os = "macos"))]
-fn macos_show_locks(_app: &AppHandle, _labels: Vec<String>) {}
-
-// Re-apply NSScreenSaverWindowLevel after a focus loss that may have been
-// triggered by Tauri's set_always_on_top() resetting the level to 3.
-#[cfg(target_os = "macos")]
-fn macos_relevel_lock(app: &AppHandle, label: &str) {
-    let app2 = app.clone();
-    let label = label.to_string();
-    let _ = app.run_on_main_thread(move || unsafe {
-        #[allow(unused_imports)]
-        use objc::{class, msg_send, sel, sel_impl};
-        use objc::runtime::Object;
-        if let Some(w) = app2.get_webview_window(&label) {
-            if let Ok(ptr) = w.ns_window() {
-                let _: () = msg_send![ptr as *mut Object, setLevel: 1000_i64];
-                let _: () = msg_send![ptr as *mut Object, orderFrontRegardless];
-                let _: () = msg_send![ptr as *mut Object, makeKeyWindow];
-            }
-        }
-    });
-}
+fn macos_close_panels(_app: &AppHandle) {}
 
 #[cfg(target_os = "macos")]
 fn macos_lock_end(app: &AppHandle) {
@@ -564,6 +791,7 @@ fn macos_lock_end(app: &AppHandle) {
         use objc::runtime::Object;
         let ns_app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
         let _: () = msg_send![ns_app, setPresentationOptions: 0_u64];
+        let _: i8 = msg_send![ns_app, setActivationPolicy: 0_i64];
     });
 }
 
@@ -620,6 +848,8 @@ fn close_lock_windows(app: &AppHandle) {
     #[cfg(target_os = "linux")]
     linux_keyboard_ungrab();
 
+    macos_close_panels(app);
+
     {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
@@ -658,7 +888,8 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
 
     // On macOS: hide menu bar and dock before any window is created so there is
     // no frame where the system chrome is visible behind the lock windows.
-    macos_hide_chrome_sync(app);
+    macos_hide_chrome_sync(app)?;
+    let setup_guard = SetupCleanupGuard::new(|| close_lock_windows(app));
 
     let mut labels: Vec<String> = Vec::new();
     for (index, monitor) in monitors.into_iter().enumerate() {
@@ -670,6 +901,7 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
                 .decorations(false)
                 .resizable(false)
                 .skip_taskbar(true)
+                .visible_on_all_workspaces(true)
                 .visible(false)
                 .title("Focus Lock Break")
                 .shadow(false)
@@ -682,6 +914,23 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
         // on Windows dual-monitor setups with mismatched DPI causes edge flicker.
         let _ = window.set_size(*size);
         let _ = window.set_position(*position);
+
+        // tao applies these operations asynchronously on macOS. Do not move
+        // the WebView into its NSPanel until the source NSWindow has the final
+        // monitor frame, otherwise the panel permanently inherits the 1x1
+        // bootstrap frame while tao later resizes only the hidden old window.
+        #[cfg(target_os = "macos")]
+        for _ in 0..50 {
+            let size_ready = window.outer_size().map(|actual| actual == *size).unwrap_or(false);
+            let position_ready = window
+                .outer_position()
+                .map(|actual| actual == *position)
+                .unwrap_or(false);
+            if size_ready && position_ready {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
 
         // On non-macOS platforms, use Tauri's window APIs directly.
         #[cfg(not(target_os = "macos"))]
@@ -701,13 +950,14 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
 
     // On macOS: configure NSWindow level + show all windows in one main-thread
     // dispatch so no intermediate state is visible.
-    macos_show_locks(app, labels);
+    macos_show_locks(app, labels)?;
 
     // On Linux/X11 grab the keyboard after all lock windows are visible so
     // Alt+Tab and other WM shortcuts are intercepted before reaching the WM.
     #[cfg(target_os = "linux")]
     linux_keyboard_grab();
 
+    setup_guard.commit();
     Ok(())
 }
 
@@ -814,7 +1064,11 @@ fn transition_to_break(app: &AppHandle) {
         runtime.last_tick = Instant::now();
         runtime.current_quote = quote;
     }
-    let _ = sync_lock_windows(app);
+    if let Err(error) = sync_lock_windows(app) {
+        eprintln!("failed to enter break lock: {error}");
+        transition_to_idle(app);
+        return;
+    }
     emit_snapshot(app);
     tauri::async_runtime::spawn(refresh_online_quote(app.clone()));
 }
@@ -895,6 +1149,7 @@ fn tick_runtime(app: &AppHandle) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn is_break_active(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
     let runtime = state.runtime.lock().unwrap();
@@ -1232,24 +1487,17 @@ fn main() {
                         }
                     }
                 }
-                WindowEvent::Focused(false) => {
-                    if label.starts_with(LOCK_PREFIX) && is_break_active(app) {
-                        // On macOS the lock window stays visible at level 1000; only
-                        // re-raise and re-focus via ObjC to avoid Tauri's
-                        // set_always_on_top resetting the level to NSFloatingWindowLevel.
-                        #[cfg(target_os = "macos")]
-                        macos_relevel_lock(app, label);
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            let _ = window.show();
-                            let _ = window.set_always_on_top(true);
-                            // On Linux, Alt+Tab can drop the window out of fullscreen;
-                            // re-assert it so the panel-cover is restored immediately.
-                            #[cfg(target_os = "linux")]
-                            let _ = window.set_fullscreen(true);
-                            let _ = window.set_focus();
-                        }
-                    }
+                #[cfg(not(target_os = "macos"))]
+                WindowEvent::Focused(false)
+                    if label.starts_with(LOCK_PREFIX) && is_break_active(app) =>
+                {
+                    let _ = window.show();
+                    let _ = window.set_always_on_top(true);
+                    // On Linux, Alt+Tab can drop the window out of fullscreen;
+                    // re-assert it so the panel-cover is restored immediately.
+                    #[cfg(target_os = "linux")]
+                    let _ = window.set_fullscreen(true);
+                    let _ = window.set_focus();
                 }
                 _ => {}
             }
@@ -1285,6 +1533,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn local_quotes_are_available() {
@@ -1304,5 +1553,24 @@ mod tests {
         assert_eq!(state.today_date, today_string());
         assert!(state.today_tasks.iter().all(|t| t.is_empty()));
         assert_eq!(state.completed_cycles, 0);
+    }
+
+    #[test]
+    fn setup_cleanup_guard_runs_cleanup_when_not_committed() {
+        let cleanup_calls = Cell::new(0);
+        {
+            let _guard = SetupCleanupGuard::new(|| cleanup_calls.set(cleanup_calls.get() + 1));
+        }
+        assert_eq!(cleanup_calls.get(), 1);
+    }
+
+    #[test]
+    fn setup_cleanup_guard_skips_cleanup_after_commit() {
+        let cleanup_calls = Cell::new(0);
+        {
+            let guard = SetupCleanupGuard::new(|| cleanup_calls.set(cleanup_calls.get() + 1));
+            guard.commit();
+        }
+        assert_eq!(cleanup_calls.get(), 0);
     }
 }
