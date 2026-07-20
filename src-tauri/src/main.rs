@@ -1192,15 +1192,95 @@ fn platform_set_system_mute(muted: bool) -> Result<(), String> {
     run_media_command("osascript", &["-e", script])
 }
 
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_CORE_AUDIO_TYPE: &str = r#"
+using System;
+using System.Runtime.InteropServices;
+
+public static class FocusLockAudio {
+    private enum EDataFlow { Render, Capture, All }
+    private enum ERole { Console, Multimedia, Communications }
+
+    [ComImport]
+    [Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+    private class MMDeviceEnumerator {}
+
+    [ComImport]
+    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDeviceEnumerator {
+        [PreserveSig] int EnumAudioEndpoints(EDataFlow dataFlow, uint stateMask, out IntPtr devices);
+        [PreserveSig] int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice device);
+    }
+
+    [ComImport]
+    [Guid("D666063F-1587-4E43-81F1-B948E807363F")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDevice {
+        [PreserveSig] int Activate(ref Guid interfaceId, uint classContext, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object instance);
+    }
+
+    [ComImport]
+    [Guid("5CDF2C82-841E-4546-9722-0CF74078229A")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioEndpointVolume {
+        [PreserveSig] int RegisterControlChangeNotify(IntPtr notify);
+        [PreserveSig] int UnregisterControlChangeNotify(IntPtr notify);
+        [PreserveSig] int GetChannelCount(out uint channelCount);
+        [PreserveSig] int SetMasterVolumeLevel(float level, ref Guid eventContext);
+        [PreserveSig] int SetMasterVolumeLevelScalar(float level, ref Guid eventContext);
+        [PreserveSig] int GetMasterVolumeLevel(out float level);
+        [PreserveSig] int GetMasterVolumeLevelScalar(out float level);
+        [PreserveSig] int SetChannelVolumeLevel(uint channel, float level, ref Guid eventContext);
+        [PreserveSig] int SetChannelVolumeLevelScalar(uint channel, float level, ref Guid eventContext);
+        [PreserveSig] int GetChannelVolumeLevel(uint channel, out float level);
+        [PreserveSig] int GetChannelVolumeLevelScalar(uint channel, out float level);
+        [PreserveSig] int SetMute([MarshalAs(UnmanagedType.Bool)] bool muted, ref Guid eventContext);
+    }
+
+    public static void SetMute(bool muted) {
+        IMMDeviceEnumerator enumerator = null;
+        IMMDevice device = null;
+        IAudioEndpointVolume endpoint = null;
+        try {
+            enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumerator());
+            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(EDataFlow.Render, ERole.Multimedia, out device));
+
+            Guid endpointVolumeId = typeof(IAudioEndpointVolume).GUID;
+            object endpointObject;
+            Marshal.ThrowExceptionForHR(device.Activate(ref endpointVolumeId, 23, IntPtr.Zero, out endpointObject));
+            endpoint = (IAudioEndpointVolume)endpointObject;
+
+            Guid eventContext = Guid.Empty;
+            Marshal.ThrowExceptionForHR(endpoint.SetMute(muted, ref eventContext));
+        } finally {
+            if (endpoint != null) Marshal.ReleaseComObject(endpoint);
+            if (device != null) Marshal.ReleaseComObject(device);
+            if (enumerator != null) Marshal.ReleaseComObject(enumerator);
+        }
+    }
+}
+"#;
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_set_mute_script(muted: bool) -> String {
+    let target = if muted { "true" } else { "false" };
+    format!(
+        "$ErrorActionPreference = 'Stop'; Add-Type -TypeDefinition '{}'; [FocusLockAudio]::SetMute(${target})",
+        WINDOWS_CORE_AUDIO_TYPE
+    )
+}
+
 #[cfg(target_os = "windows")]
 fn platform_set_system_mute(muted: bool) -> Result<(), String> {
-    let key = if muted { "{VOLUME_MUTE}" } else { "{VOLUME_MUTE}" };
+    let script = windows_set_mute_script(muted);
     run_media_command(
-        "powershell",
+        "powershell.exe",
         &[
             "-NoProfile",
+            "-NonInteractive",
             "-Command",
-            &format!("Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{key}')"),
+            &script,
         ],
     )
 }
@@ -1572,5 +1652,32 @@ mod tests {
             guard.commit();
         }
         assert_eq!(cleanup_calls.get(), 0);
+    }
+
+    #[test]
+    fn windows_mute_script_does_not_use_keyboard_emulation() {
+        let script = windows_set_mute_script(true);
+        assert!(!script.contains("SendKeys"));
+        assert!(!script.contains("keybd_event"));
+    }
+
+    #[test]
+    fn windows_mute_script_uses_core_audio_endpoint_volume() {
+        assert!(windows_set_mute_script(true).contains("5CDF2C82-841E-4546-9722-0CF74078229A"));
+    }
+
+    #[test]
+    fn windows_mute_script_sets_muted_state() {
+        assert!(windows_set_mute_script(true).contains("SetMute($true)"));
+    }
+
+    #[test]
+    fn windows_mute_script_sets_unmuted_state() {
+        assert!(windows_set_mute_script(false).contains("SetMute($false)"));
+    }
+
+    #[test]
+    fn windows_mute_script_stops_on_powershell_errors() {
+        assert!(windows_set_mute_script(true).contains("$ErrorActionPreference = 'Stop'"));
     }
 }
