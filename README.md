@@ -6,6 +6,10 @@ Focus Lock 是一个带「强制休息锁屏」的番茄时钟桌面应用。
 
 ![Focus Lock 主界面](focuslock.png)
 
+v2.1.1 以前的版本界面
+
+![Focus Lock 2.1.1](focuslock-2.1.1.png)
+
 ## 你可以用它做什么
 
 - 设置工作和休息时长，例如 25 分钟专注、5 分钟休息

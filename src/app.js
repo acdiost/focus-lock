@@ -1,3 +1,5 @@
+import { formatQuote, normalizeQuote } from "./quote.js";
+
 const tauri = window.__TAURI__;
 
 if (!tauri) {
@@ -28,8 +30,12 @@ const STRINGS = {
     statusBreak: "休息阶段已开始，所有屏幕都处于锁定覆盖状态。",
     cyclesText: (n) => `今日完成 ${n} 轮`,
     quoteFallback: "“专注一点，世界会安静一些。”",
-    settingsHeading: "节奏设置",
-    settingsDesc: "工作与休息时长会持久化保存。",
+    settingsHeading: "偏好设置",
+    settingsDesc: "调整休息行为与启动偏好。",
+    durationLabel: "计时节奏",
+    focusShortLabel: "专注",
+    breakShortLabel: "休息",
+    minuteUnit: "分",
     focusLabel: "工作时长（分钟）",
     breakLabel: "休息时长（分钟）",
     toggleOnlineQuote: "启用在线一言刷新",
@@ -50,6 +56,8 @@ const STRINGS = {
     reminderStand: "站立",
     reminderEye: "远眺",
     reminderShoulder: "放松肩颈",
+    reminderLabel: "休息提醒",
+    closeSettings: "关闭设置",
     aboutVersionPrefix: "版本",
     aboutDesc: "番茄时钟 + 休息强制锁定<br>工作时专注，休息时强制离开屏幕。",
     aboutGithub: "在 GitHub 上查看源码",
@@ -88,8 +96,12 @@ const STRINGS = {
     statusBreak: "Break started. All screens are locked.",
     cyclesText: (n) => `Today: ${n} round${n !== 1 ? "s" : ""}`,
     quoteFallback: '"Focus a little, and the world quiets down."',
-    settingsHeading: "Session Settings",
-    settingsDesc: "Focus and break durations are saved persistently.",
+    settingsHeading: "Preferences",
+    settingsDesc: "Adjust break behavior and startup preferences.",
+    durationLabel: "Timer durations",
+    focusShortLabel: "Focus",
+    breakShortLabel: "Break",
+    minuteUnit: "min",
     focusLabel: "Focus (min)",
     breakLabel: "Break (min)",
     toggleOnlineQuote: "Enable online quote refresh",
@@ -110,6 +122,8 @@ const STRINGS = {
     reminderStand: "Stand",
     reminderEye: "Look away",
     reminderShoulder: "Stretch",
+    reminderLabel: "Break reminders",
+    closeSettings: "Close settings",
     aboutVersionPrefix: "Version",
     aboutDesc:
       "Pomodoro timer + forced break lock<br>Stay focused at work, step away during breaks.",
@@ -150,8 +164,12 @@ let T = STRINGS.zh;
 
 // Dirty flags: when set, applySettings / applyTasks skip overwriting the form
 // so edits-in-progress are not stomped by the per-second state push.
-let settingsDirty = false;
+let durationDirty = false;
+let preferencesDirty = false;
+let durationRevision = 0;
+let preferencesRevision = 0;
 let tasksDirty = false;
+let settingsSavedBeforeClose = false;
 
 // ── Elements ───────────────────────────────────────────────────────────────────
 
@@ -159,12 +177,15 @@ const els = {
   appShell: document.querySelector("#app-shell"),
   lockShell: document.querySelector("#lock-shell"),
   langBtn: document.querySelector("#lang-btn"),
+  settingsBtn: document.querySelector("#settings-btn"),
+  settingsDialog: document.querySelector("#settings-dialog"),
+  settingsClose: document.querySelector("#settings-close"),
   phasePill: document.querySelector("#phase-pill"),
   cycleText: document.querySelector("#cycle-text"),
   countdown: document.querySelector("#countdown"),
   statusText: document.querySelector("#status-text"),
-  quoteInline: document.querySelector("#quote-inline"),
   quoteCard: document.querySelector("#quote-card"),
+  quoteAuthor: document.querySelector("#quote-author"),
   focusMinutes: document.querySelector("#focus-minutes"),
   breakMinutes: document.querySelector("#break-minutes"),
   onlineQuote: document.querySelector("#online-quote"),
@@ -221,6 +242,10 @@ function applyI18n() {
     const val = T[el.dataset.i18nTitle];
     if (val !== undefined) el.title = val;
   });
+  document.querySelectorAll("[data-i18n-aria-label]").forEach((el) => {
+    const val = T[el.dataset.i18nAriaLabel];
+    if (val !== undefined) el.setAttribute("aria-label", val);
+  });
   const versionEl = document.querySelector(".about-version");
   if (versionEl && state.appVersion) {
     versionEl.textContent = `${T.aboutVersionPrefix} ${state.appVersion}`;
@@ -264,9 +289,7 @@ function statusCopy(snapshot) {
 }
 
 function quoteCopy(quote) {
-  if (!quote) return T.quoteFallback;
-  const meta = quote.author ? `\n—— ${quote.author}` : "";
-  return `"${quote.text}"${meta}`;
+  return formatQuote(quote, T.quoteFallback);
 }
 
 function reminderPool() {
@@ -276,9 +299,15 @@ function reminderPool() {
 // ── Render ─────────────────────────────────────────────────────────────────────
 
 function applySettings(snapshot) {
-  if (settingsDirty) return;
-  els.focusMinutes.value = snapshot.settings.focusMinutes;
-  els.breakMinutes.value = snapshot.settings.breakMinutes;
+  if (!durationDirty) {
+    els.focusMinutes.value = snapshot.settings.focusMinutes;
+    els.breakMinutes.value = snapshot.settings.breakMinutes;
+  }
+  if (preferencesDirty) return;
+  applyPreferenceInputs(snapshot);
+}
+
+function applyPreferenceInputs(snapshot) {
   els.onlineQuote.checked = snapshot.settings.enableOnlineQuote;
   els.autoRestart.checked = snapshot.settings.autoRestart;
   els.forceBreak.checked = snapshot.settings.forceBreak;
@@ -313,8 +342,9 @@ function renderMain(snapshot) {
   els.cycleText.textContent = T.cyclesText(snapshot.completedCycles);
   els.countdown.textContent = formatDuration(snapshot.remainingSeconds || snapshot.totalSeconds);
   els.statusText.textContent = statusCopy(snapshot);
-  els.quoteInline.textContent = snapshot.quote ? `"${snapshot.quote.text}"` : T.quoteFallback;
-  els.quoteCard.textContent = quoteCopy(snapshot.quote);
+  const quote = normalizeQuote(snapshot.quote);
+  els.quoteCard.textContent = quote ? formatQuote({ text: quote.text }, T.quoteFallback) : T.quoteFallback;
+  els.quoteAuthor.textContent = quote?.author ? `— ${quote.author}` : "";
 
   els.startBtn.disabled = snapshot.phase !== "idle";
   els.pauseBtn.disabled = snapshot.phase === "idle" || snapshot.paused;
@@ -368,7 +398,7 @@ async function loadSnapshot() {
   render(snapshot);
 }
 
-async function saveSettings() {
+async function saveSettings({ durationRevisionAtStart, preferencesRevisionAtStart } = {}) {
   try {
     const settings = {
       focusMinutes: Number(els.focusMinutes.value) || 25,
@@ -380,10 +410,30 @@ async function saveSettings() {
       language: state.lang,
     };
     await invoke("save_settings", { settings });
-    settingsDirty = false;
+    if (durationRevisionAtStart === durationRevision) durationDirty = false;
+    if (preferencesRevisionAtStart === preferencesRevision) preferencesDirty = false;
+    return true;
   } catch (err) {
     els.statusText.textContent = T.errSaveSettings(err);
+    return false;
   }
+}
+
+function normalizeDuration(input, min, max, fallback) {
+  const parsed = Number(input.value);
+  const value = Number.isFinite(parsed)
+    ? Math.min(max, Math.max(min, Math.round(parsed)))
+    : fallback;
+  input.value = String(value);
+  return value;
+}
+
+async function persistTimerDurations() {
+  const settings = state.snapshot?.settings;
+  normalizeDuration(els.focusMinutes, 1, 180, settings?.focusMinutes ?? 25);
+  normalizeDuration(els.breakMinutes, 1, 60, settings?.breakMinutes ?? 5);
+  durationDirty = true;
+  await saveSettings({ durationRevisionAtStart: durationRevision });
 }
 
 async function saveTasks() {
@@ -422,10 +472,19 @@ function bindEvents() {
     // Mark settings/tasks dirty as soon as the user edits, so per-second
     // render calls don't stomp in-progress changes before the user saves.
     [els.focusMinutes, els.breakMinutes].forEach((el) =>
-      el.addEventListener("input", () => { settingsDirty = true; })
+      el.addEventListener("input", () => {
+        durationDirty = true;
+        durationRevision += 1;
+      })
+    );
+    [els.focusMinutes, els.breakMinutes].forEach((el) =>
+      el.addEventListener("change", persistTimerDurations)
     );
     [els.onlineQuote, els.autoRestart, els.forceBreak, els.launchOnLogin].forEach((el) =>
-      el.addEventListener("change", () => { settingsDirty = true; })
+      el.addEventListener("change", () => {
+        preferencesDirty = true;
+        preferencesRevision += 1;
+      })
     );
     els.taskInputs.forEach((input) =>
       input.addEventListener("input", () => { tasksDirty = true; })
@@ -452,7 +511,14 @@ function bindEvents() {
     els.cancelBtn.addEventListener("click", async () => {
       try { await invoke("cancel_pomodoro"); } catch (err) { els.statusText.textContent = T.errOp(err); }
     });
-    els.saveSettingsBtn.addEventListener("click", saveSettings);
+    els.saveSettingsBtn.addEventListener("click", async () => {
+      const revision = preferencesRevision;
+      if (await saveSettings({ preferencesRevisionAtStart: revision })) {
+        if (revision !== preferencesRevision) return;
+        settingsSavedBeforeClose = true;
+        els.settingsDialog.close();
+      }
+    });
     els.saveTasksBtn.addEventListener("click", saveTasks);
 
     els.statusBtns.forEach((btn, i) => {
@@ -467,7 +533,28 @@ function bindEvents() {
     });
 
     const dialog = document.getElementById("about-dialog");
-    document.getElementById("about-btn").addEventListener("click", () => dialog.showModal());
+    els.settingsBtn.addEventListener("click", () => {
+      if (dialog.open) dialog.close();
+      preferencesDirty = false;
+      if (state.snapshot) applyPreferenceInputs(state.snapshot);
+      els.settingsDialog.showModal();
+    });
+    els.settingsClose.addEventListener("click", () => els.settingsDialog.close());
+    els.settingsDialog.addEventListener("click", (event) => {
+      if (event.target === els.settingsDialog) els.settingsDialog.close();
+    });
+    els.settingsDialog.addEventListener("close", () => {
+      if (settingsSavedBeforeClose) {
+        settingsSavedBeforeClose = false;
+        return;
+      }
+      preferencesDirty = false;
+      if (state.snapshot) applyPreferenceInputs(state.snapshot);
+    });
+    document.getElementById("about-btn").addEventListener("click", () => {
+      if (els.settingsDialog.open) els.settingsDialog.close();
+      dialog.showModal();
+    });
     document.getElementById("about-close").addEventListener("click", () => dialog.close());
     document.getElementById("about-github").addEventListener("click", () =>
       shellOpen("https://github.com/acdiost/focus-lock/")

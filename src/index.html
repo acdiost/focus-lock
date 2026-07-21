@@ -12,6 +12,7 @@
       <header class="app-header">
         <span class="app-title">Focus Lock</span>
         <span class="app-desc" data-i18n="appDesc">番茄时钟 · 休息锁定</span>
+        <button id="settings-btn" class="toolbar-btn" data-i18n-title="settingsHeading" data-i18n-aria-label="settingsHeading" title="节奏设置" aria-label="节奏设置">⚙</button>
         <button id="lang-btn" data-i18n="langToggle" class="lang-btn">EN</button>
         <button id="about-btn" class="about-btn" data-i18n="aboutBtn">关于</button>
       </header>
@@ -29,49 +30,14 @@
         </div>
       </dialog>
 
-      <div class="card-grid">
-        <div class="timer-card">
-          <div class="timer-meta">
-            <span id="phase-pill" class="pill">待机</span>
-            <span id="cycle-text">今日完成 0 轮</span>
-          </div>
-          <div id="countdown">25:00</div>
-          <p id="status-text">准备开始新的专注轮次</p>
-          <p id="quote-inline"></p>
-          <div class="button-row">
-            <button id="start-btn" class="primary" data-i18n="startBtn">开始番茄</button>
-            <button id="pause-btn" data-i18n="pauseBtn">暂停</button>
-            <button id="resume-btn" data-i18n="resumeBtn">继续</button>
-            <button id="cancel-btn" class="danger" data-i18n="cancelBtn">取消</button>
-          </div>
-        </div>
-
-        <div class="quote-side">
-          <p class="side-label" data-i18n="quoteLabel">当前一言</p>
-          <blockquote id="quote-card"></blockquote>
-          <div class="reminder-band">
-            <span data-i18n="reminderWater">喝水</span>
-            <span data-i18n="reminderStand">站立</span>
-            <span data-i18n="reminderEye">远眺</span>
-            <span data-i18n="reminderShoulder">放松肩颈</span>
-          </div>
-          <p class="side-note" data-i18n="sideNote">工作时专注，休息时离开屏幕。休息锁定页会在所有显示器上展示今日重点、一言和提醒。</p>
-        </div>
-
-        <article class="panel settings-panel">
-          <div class="panel-head">
-            <h2 data-i18n="settingsHeading">节奏设置</h2>
-            <p data-i18n="settingsDesc">工作与休息时长会持久化保存。</p>
-          </div>
-          <div class="field-grid">
-            <label>
-              <span data-i18n="focusLabel">工作时长（分钟）</span>
-              <input id="focus-minutes" type="number" min="1" max="180" />
-            </label>
-            <label>
-              <span data-i18n="breakLabel">休息时长（分钟）</span>
-              <input id="break-minutes" type="number" min="1" max="60" />
-            </label>
+      <dialog id="settings-dialog" aria-labelledby="settings-dialog-title">
+        <div class="settings-dialog-inner">
+          <div class="settings-dialog-head">
+            <div>
+              <h2 id="settings-dialog-title" data-i18n="settingsHeading">节奏设置</h2>
+              <p data-i18n="settingsDesc">工作与休息时长会持久化保存。</p>
+            </div>
+            <button id="settings-close" class="dialog-close" data-i18n-aria-label="closeSettings" aria-label="关闭设置">✕</button>
           </div>
           <div class="toggle-list">
             <label class="toggle">
@@ -91,10 +57,39 @@
               <span data-i18n="toggleLaunchOnLogin">开机自动启动</span>
             </label>
           </div>
-          <button id="save-settings-btn" class="secondary" data-i18n="saveSettingsBtn">保存设置</button>
-        </article>
+          <button id="save-settings-btn" class="primary settings-save" data-i18n="saveSettingsBtn">保存设置</button>
+        </div>
+      </dialog>
 
-        <article class="panel tasks-panel">
+      <div class="card-grid">
+        <section class="workspace-panel timer-card">
+          <div class="timer-meta">
+            <span id="phase-pill" class="pill">待机</span>
+            <span id="cycle-text">今日完成 0 轮</span>
+          </div>
+          <div id="countdown">25:00</div>
+          <p id="status-text">准备开始新的专注轮次</p>
+          <div class="duration-row" data-i18n-aria-label="durationLabel" aria-label="计时节奏">
+            <label>
+              <span data-i18n="focusShortLabel">专注</span>
+              <input id="focus-minutes" type="number" min="1" max="180" />
+              <small data-i18n="minuteUnit">分</small>
+            </label>
+            <label>
+              <span data-i18n="breakShortLabel">休息</span>
+              <input id="break-minutes" type="number" min="1" max="60" />
+              <small data-i18n="minuteUnit">分</small>
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="start-btn" class="primary" data-i18n="startBtn">开始番茄</button>
+            <button id="pause-btn" data-i18n="pauseBtn">暂停</button>
+            <button id="resume-btn" data-i18n="resumeBtn">继续</button>
+            <button id="cancel-btn" class="danger" data-i18n="cancelBtn">取消</button>
+          </div>
+        </section>
+
+        <article class="workspace-panel panel tasks-panel">
           <div class="panel-head">
             <h2 data-i18n="tasksHeading">今日重要事项</h2>
             <p data-i18n="tasksDesc">最多 3 件，跨天自动清空。</p>
@@ -115,7 +110,16 @@
           </div>
           <button id="save-tasks-btn" class="secondary" data-i18n="saveTasksBtn">保存事项</button>
         </article>
+
       </div>
+
+      <section class="quote-banner" aria-labelledby="quote-label">
+        <p id="quote-label" class="quote-label" data-i18n="quoteLabel">当前一言</p>
+        <div class="quote-line">
+          <blockquote id="quote-card"></blockquote>
+          <cite id="quote-author"></cite>
+        </div>
+      </section>
 
     </main>
 
