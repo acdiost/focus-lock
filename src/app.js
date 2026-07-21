@@ -143,6 +143,7 @@ const state = {
   lang: "zh",
   appVersion: "",
   systemMuted: false,
+  mutePending: false,
 };
 
 let T = STRINGS.zh;
@@ -236,6 +237,8 @@ function updateMuteUi() {
   if (!els.muteMediaBtn) return;
   els.muteMediaBtn.textContent = state.systemMuted ? T.unmuteMediaBtn : T.muteMediaBtn;
   els.muteMediaBtn.setAttribute("aria-pressed", String(state.systemMuted));
+  els.muteMediaBtn.setAttribute("aria-busy", String(state.mutePending));
+  els.muteMediaBtn.disabled = state.mutePending;
 }
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
@@ -475,14 +478,19 @@ function bindEvents() {
       try { await invoke("exit_break_lock"); } catch (_) {}
     });
     els.muteMediaBtn.addEventListener("click", async () => {
+      if (state.mutePending) return;
       const nextMuted = !state.systemMuted;
+      state.mutePending = true;
+      updateMuteUi();
       try {
         await invoke("set_system_mute", { muted: nextMuted });
-        state.systemMuted = nextMuted;
-        updateMuteUi();
       } catch (err) {
         els.muteMediaBtn.textContent = T.errOp(err);
         setTimeout(updateMuteUi, 1800);
+      } finally {
+        state.mutePending = false;
+        els.muteMediaBtn.disabled = false;
+        els.muteMediaBtn.setAttribute("aria-busy", "false");
       }
     });
     window.addEventListener("keydown", (event) => {
@@ -521,6 +529,10 @@ async function init() {
     applyI18n();
   } catch (_) {}
 
+  await listen("system-mute://changed", (event) => {
+    state.systemMuted = Boolean(event.payload);
+    updateMuteUi();
+  });
   bindEvents();
   await loadSnapshot();
   if (isLockView) {

@@ -16,6 +16,13 @@ objc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
+windows = { version = "=0.61.3", features = [
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11 = { version = "2", features = ["xlib"] }

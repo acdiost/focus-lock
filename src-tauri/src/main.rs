@@ -4,11 +4,13 @@
 use std::{
     fs,
     path::PathBuf,
-    process::Command,
     sync::Mutex,
     thread,
     time::{Duration, Instant},
 };
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::process::Command;
 
 #[cfg(target_os = "macos")]
 use std::{collections::HashMap, sync::OnceLock};
@@ -27,6 +29,8 @@ type AppHandle = tauri::AppHandle<tauri::Wry>;
 const STATE_FILE_NAME: &str = "state.json";
 const LOCK_PREFIX: &str = "lock-screen-";
 const ONLINE_QUOTE_ENDPOINT: &str = "https://v1.hitokoto.cn/?encode=json";
+static SYSTEM_MUTE_OPERATION: tauri::async_runtime::Mutex<()> =
+    tauri::async_runtime::Mutex::const_new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1164,6 +1168,7 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_media_command(program: &str, args: &[&str]) -> Result<(), String> {
     let output = Command::new(program)
         .args(args)
@@ -1192,97 +1197,79 @@ fn platform_set_system_mute(muted: bool) -> Result<(), String> {
     run_media_command("osascript", &["-e", script])
 }
 
-#[cfg(any(target_os = "windows", test))]
-const WINDOWS_CORE_AUDIO_TYPE: &str = r#"
-using System;
-using System.Runtime.InteropServices;
+fn set_system_mute_with(
+    muted: bool,
+    setter: impl FnOnce(bool) -> Result<(), String>,
+) -> Result<(), String> {
+    setter(muted)
+}
 
-public static class FocusLockAudio {
-    private enum EDataFlow { Render, Capture, All }
-    private enum ERole { Console, Multimedia, Communications }
+#[cfg(target_os = "windows")]
+struct WindowsComApartment {
+    should_uninitialize: bool,
+}
 
-    [ComImport]
-    [Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-    private class MMDeviceEnumerator {}
+#[cfg(target_os = "windows")]
+impl WindowsComApartment {
+    fn initialize() -> Result<Self, String> {
+        use windows::Win32::{
+            Foundation::RPC_E_CHANGED_MODE,
+            System::Com::{CoInitializeEx, COINIT_MULTITHREADED},
+        };
 
-    [ComImport]
-    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMDeviceEnumerator {
-        [PreserveSig] int EnumAudioEndpoints(EDataFlow dataFlow, uint stateMask, out IntPtr devices);
-        [PreserveSig] int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice device);
-    }
-
-    [ComImport]
-    [Guid("D666063F-1587-4E43-81F1-B948E807363F")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMDevice {
-        [PreserveSig] int Activate(ref Guid interfaceId, uint classContext, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object instance);
-    }
-
-    [ComImport]
-    [Guid("5CDF2C82-841E-4546-9722-0CF74078229A")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioEndpointVolume {
-        [PreserveSig] int RegisterControlChangeNotify(IntPtr notify);
-        [PreserveSig] int UnregisterControlChangeNotify(IntPtr notify);
-        [PreserveSig] int GetChannelCount(out uint channelCount);
-        [PreserveSig] int SetMasterVolumeLevel(float level, ref Guid eventContext);
-        [PreserveSig] int SetMasterVolumeLevelScalar(float level, ref Guid eventContext);
-        [PreserveSig] int GetMasterVolumeLevel(out float level);
-        [PreserveSig] int GetMasterVolumeLevelScalar(out float level);
-        [PreserveSig] int SetChannelVolumeLevel(uint channel, float level, ref Guid eventContext);
-        [PreserveSig] int SetChannelVolumeLevelScalar(uint channel, float level, ref Guid eventContext);
-        [PreserveSig] int GetChannelVolumeLevel(uint channel, out float level);
-        [PreserveSig] int GetChannelVolumeLevelScalar(uint channel, out float level);
-        [PreserveSig] int SetMute([MarshalAs(UnmanagedType.Bool)] bool muted, ref Guid eventContext);
-    }
-
-    public static void SetMute(bool muted) {
-        IMMDeviceEnumerator enumerator = null;
-        IMMDevice device = null;
-        IAudioEndpointVolume endpoint = null;
-        try {
-            enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumerator());
-            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(EDataFlow.Render, ERole.Multimedia, out device));
-
-            Guid endpointVolumeId = typeof(IAudioEndpointVolume).GUID;
-            object endpointObject;
-            Marshal.ThrowExceptionForHR(device.Activate(ref endpointVolumeId, 23, IntPtr.Zero, out endpointObject));
-            endpoint = (IAudioEndpointVolume)endpointObject;
-
-            Guid eventContext = Guid.Empty;
-            Marshal.ThrowExceptionForHR(endpoint.SetMute(muted, ref eventContext));
-        } finally {
-            if (endpoint != null) Marshal.ReleaseComObject(endpoint);
-            if (device != null) Marshal.ReleaseComObject(device);
-            if (enumerator != null) Marshal.ReleaseComObject(enumerator);
+        let result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if result.is_ok() {
+            Ok(Self {
+                should_uninitialize: true,
+            })
+        } else if result == RPC_E_CHANGED_MODE {
+            Ok(Self {
+                should_uninitialize: false,
+            })
+        } else {
+            Err(format!(
+                "failed to initialize Windows audio COM: {}",
+                windows::core::Error::from_hresult(result)
+            ))
         }
     }
 }
-"#;
 
-#[cfg(any(target_os = "windows", test))]
-fn windows_set_mute_script(muted: bool) -> String {
-    let target = if muted { "true" } else { "false" };
-    format!(
-        "$ErrorActionPreference = 'Stop'; Add-Type -TypeDefinition '{}'; [FocusLockAudio]::SetMute(${target})",
-        WINDOWS_CORE_AUDIO_TYPE
-    )
+#[cfg(target_os = "windows")]
+impl Drop for WindowsComApartment {
+    fn drop(&mut self) {
+        if self.should_uninitialize {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn platform_set_system_mute(muted: bool) -> Result<(), String> {
-    let script = windows_set_mute_script(muted);
-    run_media_command(
-        "powershell.exe",
-        &[
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &script,
-        ],
-    )
+    use windows::Win32::{
+        Media::Audio::{
+            eMultimedia, eRender, Endpoints::IAudioEndpointVolume, IMMDeviceEnumerator,
+            MMDeviceEnumerator,
+        },
+        System::Com::{CoCreateInstance, CLSCTX_ALL},
+    };
+
+    let _apartment = WindowsComApartment::initialize()?;
+    unsafe {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|error| {
+                format!("failed to create Windows audio device enumerator: {error}")
+            })?;
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eMultimedia)
+            .map_err(|error| format!("failed to open the default Windows audio output: {error}"))?;
+        let endpoint: IAudioEndpointVolume = device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|error| format!("failed to open Windows audio volume control: {error}"))?;
+        endpoint
+            .SetMute(muted, std::ptr::null())
+            .map_err(|error| format!("failed to set Windows audio mute state: {error}"))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1422,9 +1409,26 @@ fn exit_break_lock(app: AppHandle) -> Snapshot {
     build_snapshot(&app)
 }
 
+async fn run_system_mute_task_with(
+    muted: bool,
+    setter: impl FnOnce(bool) -> Result<(), String> + Send + 'static,
+) -> Result<impl Send, String> {
+    let operation = SYSTEM_MUTE_OPERATION.lock().await;
+    let (operation, result) = tauri::async_runtime::spawn_blocking(move || {
+        let result = set_system_mute_with(muted, setter);
+        (operation, result)
+    })
+    .await
+    .map_err(|error| format!("system mute task failed: {error}"))?;
+    result?;
+    Ok(operation)
+}
+
 #[tauri::command]
-fn set_system_mute(muted: bool) -> Result<(), String> {
-    platform_set_system_mute(muted)
+async fn set_system_mute(app: AppHandle, muted: bool) -> Result<(), String> {
+    let _operation = run_system_mute_task_with(muted, platform_set_system_mute).await?;
+    app.emit("system-mute://changed", muted)
+        .map_err(|error| format!("failed to synchronize system mute state: {error}"))
 }
 
 fn main() {
@@ -1655,29 +1659,40 @@ mod tests {
     }
 
     #[test]
-    fn windows_mute_script_does_not_use_keyboard_emulation() {
-        let script = windows_set_mute_script(true);
-        assert!(!script.contains("SendKeys"));
-        assert!(!script.contains("keybd_event"));
+    fn mute_backend_receives_requested_state() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        set_system_mute_with(true, |muted| {
+            calls.borrow_mut().push(muted);
+            Ok(())
+        })
+        .unwrap();
+        set_system_mute_with(false, |muted| {
+            calls.borrow_mut().push(muted);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(*calls.borrow(), vec![true, false]);
     }
 
     #[test]
-    fn windows_mute_script_uses_core_audio_endpoint_volume() {
-        assert!(windows_set_mute_script(true).contains("5CDF2C82-841E-4546-9722-0CF74078229A"));
+    fn mute_backend_error_is_preserved() {
+        let error = set_system_mute_with(true, |_| Err("audio endpoint unavailable".to_string()))
+            .unwrap_err();
+        assert_eq!(error, "audio endpoint unavailable");
     }
 
     #[test]
-    fn windows_mute_script_sets_muted_state() {
-        assert!(windows_set_mute_script(true).contains("SetMute($true)"));
-    }
+    fn system_mute_task_runs_backend_on_blocking_thread() {
+        let caller_thread = std::thread::current().id();
+        let backend_thread = std::sync::Arc::new(Mutex::new(None));
+        let observed_thread = backend_thread.clone();
 
-    #[test]
-    fn windows_mute_script_sets_unmuted_state() {
-        assert!(windows_set_mute_script(false).contains("SetMute($false)"));
-    }
+        let _operation = tauri::async_runtime::block_on(run_system_mute_task_with(true, move |_| {
+            *observed_thread.lock().unwrap() = Some(std::thread::current().id());
+            Ok(())
+        }))
+        .unwrap();
 
-    #[test]
-    fn windows_mute_script_stops_on_powershell_errors() {
-        assert!(windows_set_mute_script(true).contains("$ErrorActionPreference = 'Stop'"));
+        assert_ne!(*backend_thread.lock().unwrap(), Some(caller_thread));
     }
 }
