@@ -1033,14 +1033,35 @@ fn begin_focus(app: &AppHandle, focus_minutes: u64, break_minutes: u64) -> tauri
     }
     {
         let mut runtime = state.runtime.lock().unwrap();
-        runtime.phase = Phase::Focus;
-        runtime.remaining_seconds = focus_minutes.clamp(1, 180) * 60;
-        runtime.total_seconds = runtime.remaining_seconds;
-        runtime.paused = false;
-        runtime.last_tick = Instant::now();
+        start_focus_runtime(&mut runtime, focus_minutes);
     }
     emit_snapshot(app);
     Ok(build_snapshot(app))
+}
+
+fn start_focus_runtime(runtime: &mut RuntimeState, focus_minutes: u64) {
+    runtime.phase = Phase::Focus;
+    runtime.remaining_seconds = focus_minutes.clamp(1, 180) * 60;
+    runtime.total_seconds = runtime.remaining_seconds;
+    runtime.paused = false;
+    runtime.last_tick = Instant::now();
+}
+
+fn finish_break_runtime(runtime: &mut RuntimeState, settings: &Settings) -> bool {
+    if runtime.phase != Phase::Break {
+        return false;
+    }
+
+    if settings.auto_restart {
+        start_focus_runtime(runtime, settings.focus_minutes);
+    } else {
+        runtime.phase = Phase::Idle;
+        runtime.remaining_seconds = 0;
+        runtime.total_seconds = 0;
+        runtime.paused = false;
+        runtime.last_tick = Instant::now();
+    }
+    true
 }
 
 fn transition_to_break(app: &AppHandle) {
@@ -1078,23 +1099,23 @@ fn transition_to_break(app: &AppHandle) {
 }
 
 fn exit_break(app: &AppHandle) {
-    let (auto_restart, focus_min, break_min) = {
+    let settings = {
         let state = app.state::<AppState>();
         let persistent = state.persistent.lock().unwrap();
-        (
-            persistent.settings.auto_restart,
-            persistent.settings.focus_minutes,
-            persistent.settings.break_minutes,
-        )
+        persistent.settings.clone()
     };
-    if auto_restart {
-        close_lock_windows(app);
-        if begin_focus(app, focus_min, break_min).is_err() {
-            transition_to_idle(app);
-        }
-    } else {
-        transition_to_idle(app);
+
+    let transitioned = {
+        let state = app.state::<AppState>();
+        let mut runtime = state.runtime.lock().unwrap();
+        finish_break_runtime(&mut runtime, &settings)
+    };
+    if !transitioned {
+        return;
     }
+
+    close_lock_windows(app);
+    emit_snapshot(app);
 }
 
 fn transition_to_idle(app: &AppHandle) {
@@ -1637,6 +1658,62 @@ mod tests {
         assert_eq!(state.today_date, today_string());
         assert!(state.today_tasks.iter().all(|t| t.is_empty()));
         assert_eq!(state.completed_cycles, 0);
+    }
+
+    #[test]
+    fn finishing_break_auto_starts_next_focus() {
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            remaining_seconds: 0,
+            total_seconds: 300,
+            ..RuntimeState::default()
+        };
+        let settings = Settings {
+            focus_minutes: 42,
+            auto_restart: true,
+            ..Settings::default()
+        };
+
+        assert!(finish_break_runtime(&mut runtime, &settings));
+        assert_eq!(runtime.phase, Phase::Focus);
+        assert_eq!(runtime.remaining_seconds, 42 * 60);
+        assert_eq!(runtime.total_seconds, 42 * 60);
+        assert!(!runtime.paused);
+    }
+
+    #[test]
+    fn finishing_break_stops_when_auto_restart_is_disabled() {
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            remaining_seconds: 0,
+            total_seconds: 300,
+            ..RuntimeState::default()
+        };
+
+        assert!(finish_break_runtime(&mut runtime, &Settings::default()));
+        assert_eq!(runtime.phase, Phase::Idle);
+        assert_eq!(runtime.remaining_seconds, 0);
+        assert_eq!(runtime.total_seconds, 0);
+        assert!(!runtime.paused);
+    }
+
+    #[test]
+    fn stale_break_completion_does_not_overwrite_current_phase() {
+        let mut runtime = RuntimeState {
+            phase: Phase::Focus,
+            remaining_seconds: 1200,
+            total_seconds: 1500,
+            ..RuntimeState::default()
+        };
+        let settings = Settings {
+            auto_restart: true,
+            ..Settings::default()
+        };
+
+        assert!(!finish_break_runtime(&mut runtime, &settings));
+        assert_eq!(runtime.phase, Phase::Focus);
+        assert_eq!(runtime.remaining_seconds, 1200);
+        assert_eq!(runtime.total_seconds, 1500);
     }
 
     #[test]
