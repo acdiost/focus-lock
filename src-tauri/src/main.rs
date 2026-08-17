@@ -2,6 +2,7 @@
 #![allow(unexpected_cfgs)]
 
 use std::{
+    collections::HashSet,
     fs,
     path::PathBuf,
     sync::Mutex,
@@ -113,7 +114,8 @@ struct RuntimeState {
     paused: bool,
     last_tick: Instant,
     current_quote: Quote,
-    allow_lock_close: bool,
+    closing_lock_windows: HashSet<String>,
+    next_lock_generation: u64,
 }
 
 impl Default for RuntimeState {
@@ -125,7 +127,8 @@ impl Default for RuntimeState {
             paused: false,
             last_tick: Instant::now(),
             current_quote: local_quote_for_seed(0),
-            allow_lock_close: false,
+            closing_lock_windows: HashSet::new(),
+            next_lock_generation: 0,
         }
     }
 }
@@ -854,18 +857,21 @@ fn close_lock_windows(app: &AppHandle) {
 
     macos_close_panels(app);
 
-    {
-        let state = app.state::<AppState>();
-        let mut runtime = state.runtime.lock().unwrap();
-        runtime.allow_lock_close = true;
-    }
-
     let labels: Vec<String> = app
         .webview_windows()
         .keys()
         .filter(|label| label.starts_with(LOCK_PREFIX))
         .cloned()
         .collect();
+
+    // Window close requests are delivered asynchronously. Remember the exact
+    // windows we asked to close instead of using a global boolean that can be
+    // reset by the next break before an old request reaches the event loop.
+    {
+        let state = app.state::<AppState>();
+        let mut runtime = state.runtime.lock().unwrap();
+        runtime.closing_lock_windows.extend(labels.iter().cloned());
+    }
 
     for label in labels {
         if let Some(window) = app.get_webview_window(&label) {
@@ -876,14 +882,24 @@ fn close_lock_windows(app: &AppHandle) {
     macos_lock_end(app);
 }
 
+fn lock_window_label(generation: u64, monitor_index: usize) -> String {
+    format!("{LOCK_PREFIX}{generation}-{monitor_index}")
+}
+
+fn should_prevent_lock_close(runtime: &RuntimeState, label: &str) -> bool {
+    runtime.phase == Phase::Break && !runtime.closing_lock_windows.contains(label)
+}
+
 fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
     close_lock_windows(app);
 
-    {
+    let lock_generation = {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
-        runtime.allow_lock_close = false;
-    }
+        let generation = runtime.next_lock_generation;
+        runtime.next_lock_generation = runtime.next_lock_generation.wrapping_add(1);
+        generation
+    };
 
     let Some(main_window) = app.get_webview_window("main") else {
         return Ok(());
@@ -897,7 +913,9 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
 
     let mut labels: Vec<String> = Vec::new();
     for (index, monitor) in monitors.into_iter().enumerate() {
-        let label = format!("{LOCK_PREFIX}{index}");
+        // A unique label prevents an old window whose asynchronous teardown is
+        // still pending from colliding with the next break's window.
+        let label = lock_window_label(lock_generation, index);
         let size = monitor.size();
         let position = monitor.position();
         let window =
@@ -1587,10 +1605,15 @@ fn main() {
                     } else if label.starts_with(LOCK_PREFIX) {
                         let state = app.state::<AppState>();
                         let runtime = state.runtime.lock().unwrap();
-                        if runtime.phase == Phase::Break && !runtime.allow_lock_close {
+                        if should_prevent_lock_close(&runtime, label) {
                             api.prevent_close();
                         }
                     }
+                }
+                WindowEvent::Destroyed if label.starts_with(LOCK_PREFIX) => {
+                    let state = app.state::<AppState>();
+                    let mut runtime = state.runtime.lock().unwrap();
+                    runtime.closing_lock_windows.remove(label);
                 }
                 #[cfg(not(target_os = "macos"))]
                 WindowEvent::Focused(false)
@@ -1714,6 +1737,34 @@ mod tests {
         assert_eq!(runtime.phase, Phase::Focus);
         assert_eq!(runtime.remaining_seconds, 1200);
         assert_eq!(runtime.total_seconds, 1500);
+    }
+
+    #[test]
+    fn old_lock_close_stays_authorized_when_next_break_starts() {
+        let old_label = lock_window_label(7, 0);
+        let new_label = lock_window_label(8, 0);
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            ..RuntimeState::default()
+        };
+        runtime.closing_lock_windows.insert(old_label.clone());
+
+        assert!(!should_prevent_lock_close(&runtime, &old_label));
+        assert!(should_prevent_lock_close(&runtime, &new_label));
+        assert_ne!(old_label, new_label);
+    }
+
+    #[test]
+    fn lock_close_is_allowed_after_break_transitions_to_focus() {
+        let runtime = RuntimeState {
+            phase: Phase::Focus,
+            ..RuntimeState::default()
+        };
+
+        assert!(!should_prevent_lock_close(
+            &runtime,
+            &lock_window_label(0, 0)
+        ));
     }
 
     #[test]
