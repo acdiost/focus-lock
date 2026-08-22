@@ -116,6 +116,7 @@ struct RuntimeState {
     current_quote: Quote,
     closing_lock_windows: HashSet<String>,
     next_lock_generation: u64,
+    focus_lock_window: Option<String>,
 }
 
 impl Default for RuntimeState {
@@ -129,6 +130,7 @@ impl Default for RuntimeState {
             current_quote: local_quote_for_seed(0),
             closing_lock_windows: HashSet::new(),
             next_lock_generation: 0,
+            focus_lock_window: None,
         }
     }
 }
@@ -851,6 +853,22 @@ fn linux_keyboard_ungrab() {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn close_lock_windows(app: &AppHandle) {
+    // Keep WebView2 lock windows alive between rounds. Repeatedly destroying and
+    // recreating them races WebView2's asynchronous teardown on Windows, which
+    // can leave later breaks without a window to show.
+    for window in app
+        .webview_windows()
+        .into_iter()
+        .filter(|(label, _)| label.starts_with(LOCK_PREFIX))
+        .map(|(_, window)| window)
+    {
+        let _ = window.hide();
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn close_lock_windows(app: &AppHandle) {
     #[cfg(target_os = "linux")]
     linux_keyboard_ungrab();
@@ -886,11 +904,93 @@ fn lock_window_label(generation: u64, monitor_index: usize) -> String {
     format!("{LOCK_PREFIX}{generation}-{monitor_index}")
 }
 
+#[cfg(target_os = "windows")]
+fn active_lock_window_label(_generation: u64, monitor_index: usize) -> String {
+    // Stable labels let each monitor reuse the same hidden WebView2 window on
+    // every break instead of entering the close/create race again.
+    format!("{LOCK_PREFIX}windows-{monitor_index}")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn active_lock_window_label(generation: u64, monitor_index: usize) -> String {
+    lock_window_label(generation, monitor_index)
+}
+
 fn should_prevent_lock_close(runtime: &RuntimeState, label: &str) -> bool {
     runtime.phase == Phase::Break && !runtime.closing_lock_windows.contains(label)
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
+fn should_reassert_lock_focus(runtime: &RuntimeState, label: &str) -> bool {
+    runtime.phase == Phase::Break && runtime.focus_lock_window.as_deref() == Some(label)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn lock_setup_error(message: impl Into<String>) -> tauri::Error {
+    tauri::Error::Io(std::io::Error::other(message.into()))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_current_virtual_desktop_id() -> tauri::Result<windows::core::GUID> {
+    use windows::Win32::{
+        System::Com::{CoCreateInstance, CLSCTX_ALL},
+        UI::{
+            Shell::{IVirtualDesktopManager, VirtualDesktopManager},
+            WindowsAndMessaging::GetForegroundWindow,
+        },
+    };
+
+    let _apartment = WindowsComApartment::initialize().map_err(lock_setup_error)?;
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground.0.is_null() {
+            return Err(lock_setup_error(
+                "cannot determine the active Windows virtual desktop",
+            ));
+        }
+        let manager: IVirtualDesktopManager =
+            CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_ALL).map_err(|error| {
+                lock_setup_error(format!("failed to open virtual desktop manager: {error}"))
+            })?;
+        manager.GetWindowDesktopId(foreground).map_err(|error| {
+            lock_setup_error(format!("failed to read active virtual desktop: {error}"))
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_move_to_virtual_desktop(
+    window: &tauri::WebviewWindow<tauri::Wry>,
+    desktop_id: &windows::core::GUID,
+) -> tauri::Result<()> {
+    use windows::Win32::{
+        System::Com::{CoCreateInstance, CLSCTX_ALL},
+        UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager},
+    };
+
+    let _apartment = WindowsComApartment::initialize().map_err(lock_setup_error)?;
+    unsafe {
+        let manager: IVirtualDesktopManager =
+            CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_ALL).map_err(|error| {
+                lock_setup_error(format!("failed to open virtual desktop manager: {error}"))
+            })?;
+        manager
+            .MoveWindowToDesktop(window.hwnd()?, desktop_id)
+            .map_err(|error| {
+                lock_setup_error(format!(
+                    "failed to move lock window to active virtual desktop: {error}"
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
+    {
+        let state = app.state::<AppState>();
+        let mut runtime = state.runtime.lock().unwrap();
+        runtime.focus_lock_window = None;
+    }
     close_lock_windows(app);
 
     let lock_generation = {
@@ -912,14 +1012,24 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
     let setup_guard = SetupCleanupGuard::new(|| close_lock_windows(app));
 
     let mut labels: Vec<String> = Vec::new();
+    #[cfg(target_os = "windows")]
+    let mut current_virtual_desktop = None;
     for (index, monitor) in monitors.into_iter().enumerate() {
-        // A unique label prevents an old window whose asynchronous teardown is
-        // still pending from colliding with the next break's window.
-        let label = lock_window_label(lock_generation, index);
+        // Windows uses a stable label to reuse WebView2 windows between rounds.
+        // Other platforms keep generation-based labels so asynchronous teardown
+        // from an old break cannot collide with a newly created window.
+        let label = active_lock_window_label(lock_generation, index);
         let size = monitor.size();
         let position = monitor.position();
-        let window =
-            WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::App("index.html#lock".into()))
+        let (window, reused) = if let Some(window) = app.get_webview_window(&label) {
+            (window, true)
+        } else {
+            (
+                WebviewWindowBuilder::new(
+                    app,
+                    label.clone(),
+                    WebviewUrl::App("index.html#lock".into()),
+                )
                 .decorations(false)
                 .resizable(false)
                 .skip_taskbar(true)
@@ -929,13 +1039,33 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
                 .shadow(false)
                 .inner_size(1.0, 1.0)
                 .position(0.0, 0.0)
-                .build()?;
+                .build()?,
+                false,
+            )
+        };
 
         // Correct with exact physical-pixel values: avoids 1-2px rounding errors
         // caused by dividing physical coords by a fractional scale factor, which
         // on Windows dual-monitor setups with mismatched DPI causes edge flicker.
-        let _ = window.set_size(*size);
-        let _ = window.set_position(*position);
+        window.set_size(*size)?;
+        window.set_position(*position)?;
+
+        // Tauri does not implement visible_on_all_workspaces on Windows. Move
+        // each persistent WebView2 window to the desktop that is active now.
+        #[cfg(target_os = "windows")]
+        if reused {
+            let desktop_id = match current_virtual_desktop {
+                Some(desktop_id) => desktop_id,
+                None => {
+                    let desktop_id = windows_current_virtual_desktop_id()?;
+                    current_virtual_desktop = Some(desktop_id);
+                    desktop_id
+                }
+            };
+            windows_move_to_virtual_desktop(&window, &desktop_id)?;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = reused;
 
         // tao applies these operations asynchronously on macOS. Do not move
         // the WebView into its NSPanel until the source NSWindow has the final
@@ -957,17 +1087,49 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
         // On non-macOS platforms, use Tauri's window APIs directly.
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = window.set_always_on_top(true);
-            let _ = window.set_focus();
-            let _ = window.show();
+            window.set_always_on_top(true)?;
+            window.show()?;
+            window.unminimize()?;
             // On Linux, _NET_WM_STATE_ABOVE is not enough to cover dock/panel windows
             // (_NET_WM_WINDOW_TYPE_DOCK). Setting fullscreen triggers
             // _NET_WM_STATE_FULLSCREEN which X11/Mutter places above all panels.
             #[cfg(target_os = "linux")]
-            let _ = window.set_fullscreen(true);
+            window.set_fullscreen(true)?;
+
+            // Getter requests are processed after the show/topmost requests, so
+            // they also verify that an asynchronously reused window became live.
+            if !window.is_visible()? {
+                return Err(lock_setup_error(format!(
+                    "lock window {label} did not become visible"
+                )));
+            }
+            if !window.is_always_on_top()? {
+                return Err(lock_setup_error(format!(
+                    "lock window {label} did not become topmost"
+                )));
+            }
         }
 
         labels.push(label);
+    }
+
+    let focus_label = labels.first().cloned();
+    {
+        let state = app.state::<AppState>();
+        let mut runtime = state.runtime.lock().unwrap();
+        runtime.focus_lock_window = focus_label.clone();
+    }
+
+    // Only one window can own keyboard focus. Let the first monitor's lock
+    // window claim it after every display overlay is already visible.
+    #[cfg(not(target_os = "macos"))]
+    if let Some(label) = focus_label {
+        let window = app.get_webview_window(&label).ok_or_else(|| {
+            lock_setup_error(format!(
+                "focus lock window {label} disappeared during setup"
+            ))
+        })?;
+        window.set_focus()?;
     }
 
     // On macOS: configure NSWindow level + show all windows in one main-thread
@@ -1190,13 +1352,6 @@ fn tick_runtime(app: &AppHandle) {
         Action::EnterBreak => transition_to_break(app),
         Action::ExitBreak => exit_break(app),
     }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn is_break_active(app: &AppHandle) -> bool {
-    let state = app.state::<AppState>();
-    let runtime = state.runtime.lock().unwrap();
-    runtime.phase == Phase::Break
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -1616,16 +1771,28 @@ fn main() {
                     runtime.closing_lock_windows.remove(label);
                 }
                 #[cfg(not(target_os = "macos"))]
-                WindowEvent::Focused(false)
-                    if label.starts_with(LOCK_PREFIX) && is_break_active(app) =>
-                {
-                    let _ = window.show();
-                    let _ = window.set_always_on_top(true);
-                    // On Linux, Alt+Tab can drop the window out of fullscreen;
-                    // re-assert it so the panel-cover is restored immediately.
-                    #[cfg(target_os = "linux")]
-                    let _ = window.set_fullscreen(true);
-                    let _ = window.set_focus();
+                WindowEvent::Focused(false) if label.starts_with(LOCK_PREFIX) => {
+                    let should_refocus = {
+                        let state = app.state::<AppState>();
+                        let runtime = state.runtime.lock().unwrap();
+                        should_reassert_lock_focus(&runtime, label)
+                    };
+                    if !should_refocus {
+                        return;
+                    }
+                    let result = (|| -> tauri::Result<()> {
+                        window.show()?;
+                        window.set_always_on_top(true)?;
+                        // On Linux, Alt+Tab can drop the window out of fullscreen;
+                        // re-assert it so the panel-cover is restored immediately.
+                        #[cfg(target_os = "linux")]
+                        window.set_fullscreen(true)?;
+                        window.set_focus()?;
+                        Ok(())
+                    })();
+                    if let Err(error) = result {
+                        eprintln!("failed to restore lock window {label}: {error}");
+                    }
                 }
                 _ => {}
             }
@@ -1764,6 +1931,38 @@ mod tests {
         assert!(!should_prevent_lock_close(
             &runtime,
             &lock_window_label(0, 0)
+        ));
+    }
+
+    #[test]
+    fn only_designated_lock_window_reasserts_focus() {
+        let runtime = RuntimeState {
+            phase: Phase::Break,
+            focus_lock_window: Some("lock-screen-windows-0".to_string()),
+            ..RuntimeState::default()
+        };
+
+        assert!(should_reassert_lock_focus(
+            &runtime,
+            "lock-screen-windows-0"
+        ));
+        assert!(!should_reassert_lock_focus(
+            &runtime,
+            "lock-screen-windows-1"
+        ));
+    }
+
+    #[test]
+    fn focus_is_not_reasserted_outside_break() {
+        let runtime = RuntimeState {
+            phase: Phase::Focus,
+            focus_lock_window: Some("lock-screen-windows-0".to_string()),
+            ..RuntimeState::default()
+        };
+
+        assert!(!should_reassert_lock_focus(
+            &runtime,
+            "lock-screen-windows-0"
         ));
     }
 
