@@ -760,37 +760,54 @@ fn macos_show_locks(_app: &AppHandle, _labels: Vec<String>) -> tauri::Result<()>
 }
 
 #[cfg(target_os = "macos")]
-fn macos_close_panels(app: &AppHandle) {
-    let panels: Vec<MacosLockPanel> = macos_lock_panels()
-        .lock()
-        .unwrap()
-        .drain()
-        .map(|(_, panel)| panel)
-        .collect();
-    let _ = app.run_on_main_thread(move || unsafe {
-        #[allow(unused_imports)]
-        use objc::{msg_send, sel, sel_impl};
-        use objc::runtime::Object;
-        for lock_panel in panels {
-            let panel = lock_panel.panel as *mut Object;
-            let delegate = lock_panel.delegate as *mut Object;
-            let source_window = lock_panel.source_window as *mut Object;
-            let _: () = msg_send![panel, setDelegate: std::ptr::null::<Object>()];
-            let content: *mut Object = msg_send![panel, contentView];
-            if !content.is_null() {
-                let _: () = msg_send![source_window, setContentView: content];
+fn macos_close_panels(app: &AppHandle) -> HashSet<String> {
+    let panels: Vec<(String, MacosLockPanel)> =
+        macos_lock_panels().lock().unwrap().drain().collect();
+    let labels = panels
+        .iter()
+        .map(|(label, _)| label.clone())
+        .collect::<HashSet<_>>();
+    let app2 = app.clone();
+    if app
+        .run_on_main_thread(move || unsafe {
+            use objc::runtime::Object;
+            #[allow(unused_imports)]
+            use objc::{msg_send, sel, sel_impl};
+            for (label, lock_panel) in panels {
+                let panel = lock_panel.panel as *mut Object;
+                let delegate = lock_panel.delegate as *mut Object;
+                let source_window = lock_panel.source_window as *mut Object;
+                let _: () = msg_send![panel, setDelegate: std::ptr::null::<Object>()];
+                let content: *mut Object = msg_send![panel, contentView];
+                if !content.is_null() {
+                    let _: () = msg_send![source_window, setContentView: content];
+                }
+                let _: () = msg_send![panel, orderOut: std::ptr::null::<Object>()];
+                let _: () = msg_send![panel, close];
+                let _: () = msg_send![panel, release];
+                let _: () = msg_send![delegate, release];
+                let _: () = msg_send![source_window, release];
+
+                // Restore the WKWebView before closing its Tauri source window.
+                // Keeping both operations in one main-thread task prevents WebKit
+                // teardown from racing the native NSPanel cleanup.
+                if let Some(window) = app2.get_webview_window(&label) {
+                    let _ = window.close();
+                }
             }
-            let _: () = msg_send![panel, orderOut: std::ptr::null::<Object>()];
-            let _: () = msg_send![panel, close];
-            let _: () = msg_send![panel, release];
-            let _: () = msg_send![delegate, release];
-            let _: () = msg_send![source_window, release];
-        }
-    });
+        })
+        .is_ok()
+    {
+        labels
+    } else {
+        HashSet::new()
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn macos_close_panels(_app: &AppHandle) {}
+fn macos_close_panels(_app: &AppHandle) -> HashSet<String> {
+    HashSet::new()
+}
 
 #[cfg(target_os = "macos")]
 fn macos_lock_end(app: &AppHandle) {
@@ -873,8 +890,6 @@ fn close_lock_windows(app: &AppHandle) {
     #[cfg(target_os = "linux")]
     linux_keyboard_ungrab();
 
-    macos_close_panels(app);
-
     let labels: Vec<String> = app
         .webview_windows()
         .keys()
@@ -891,7 +906,11 @@ fn close_lock_windows(app: &AppHandle) {
         runtime.closing_lock_windows.extend(labels.iter().cloned());
     }
 
+    let panel_labels = macos_close_panels(app);
     for label in labels {
+        if panel_labels.contains(&label) {
+            continue;
+        }
         if let Some(window) = app.get_webview_window(&label) {
             let _ = window.close();
         }
@@ -1354,10 +1373,53 @@ fn tick_runtime(app: &AppHandle) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn macos_refresh_main_window(app: &AppHandle, activate: bool) {
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || unsafe {
+        use objc::runtime::Object;
+        #[allow(unused_imports)]
+        use objc::{class, msg_send, sel, sel_impl};
+
+        let ns_app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        if activate {
+            let _: i8 = msg_send![ns_app, setActivationPolicy: 0_i64];
+        }
+
+        if let Some(window) = app2.get_webview_window("main") {
+            let _ = window.eval(
+                "document.documentElement.style.transform='translateZ(0)';\
+                 requestAnimationFrame(()=>document.documentElement.style.transform='');",
+            );
+            if let Ok(ns_window) = window.ns_window() {
+                let ns_window = ns_window as *mut Object;
+                let content: *mut Object = msg_send![ns_window, contentView];
+                if !content.is_null() {
+                    let _: () = msg_send![content, setNeedsDisplay: 1_i8];
+                    let _: () = msg_send![content, displayIfNeeded];
+                }
+                if activate {
+                    let _: () = msg_send![ns_window, orderFrontRegardless];
+                    let _: () =
+                        msg_send![ns_window, makeKeyAndOrderFront: std::ptr::null::<Object>()];
+                }
+            }
+        }
+
+        if activate {
+            let _: () = msg_send![ns_app, activateIgnoringOtherApps: 1_i8];
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_refresh_main_window(_app: &AppHandle, _activate: bool) {}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
+        macos_refresh_main_window(app, true);
         let _ = window.set_focus();
     }
 }
@@ -1821,6 +1883,7 @@ fn main() {
                 };
                 apply_launch_at_login(launch);
                 emit_snapshot(app);
+                macos_refresh_main_window(app, false);
             }
         });
 }
