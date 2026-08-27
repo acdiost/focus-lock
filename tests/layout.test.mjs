@@ -46,6 +46,10 @@ test("main window uses a 370x600 compact layout with a bottom quote", async () =
   assert.match(app, /quoteAuthor\.textContent = quote/);
   assert.match(app, /settingsDialog\.showModal/);
   assert.match(app, /persistTimerDurations/);
+  assert.ok(
+    app.indexOf('listen("pomodoro://state"') < app.indexOf("await loadSnapshot()"),
+    "state listener must be registered before loading the initial snapshot",
+  );
   assert.equal(mainWindow.width, 370);
   assert.equal(mainWindow.height, 600);
   assert.ok(mainWindow.minWidth <= 370);

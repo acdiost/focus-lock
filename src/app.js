@@ -626,6 +626,9 @@ async function init() {
     state.systemMuted = Boolean(event.payload);
     updateMuteUi();
   });
+  await listen("pomodoro://state", (event) => {
+    render(event.payload);
+  });
   bindEvents();
   await loadSnapshot();
   if (isLockView) {
@@ -644,9 +647,6 @@ async function init() {
       els.lockReminder.textContent = reminders[state.reminderIndex % reminders.length];
     }, 6000);
   }
-  await listen("pomodoro://state", (event) => {
-    render(event.payload);
-  });
   if (!isLockView) {
     await listen("open://about", () => {
       document.getElementById("about-dialog").showModal();
