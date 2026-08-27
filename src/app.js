@@ -385,6 +385,12 @@ function renderContent(snapshot) {
 }
 
 function render(snapshot) {
+  const previousDate = state.snapshot?.todayDate;
+  if (previousDate && snapshot.todayDate && previousDate !== snapshot.todayDate) {
+    // A new business day must replace even unsaved values left in the inputs;
+    // otherwise the dirty-edit guard would keep yesterday's tasks on screen.
+    tasksDirty = false;
+  }
   state.snapshot = snapshot;
   const lang = effectiveLang(snapshot.settings);
   if (state.lang !== lang) setLang(lang);

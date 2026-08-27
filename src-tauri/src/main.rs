@@ -143,6 +143,7 @@ struct Snapshot {
     total_seconds: u64,
     paused: bool,
     completed_cycles: u32,
+    today_date: String,
     settings: Settings,
     today_tasks: Vec<String>,
     task_statuses: Vec<String>,
@@ -181,23 +182,42 @@ fn state_file_path(app: &AppHandle) -> PathBuf {
     root
 }
 
-fn ensure_today_fresh(persistent: &mut PersistentState) {
-    let today = today_string();
+fn ensure_date_fresh(persistent: &mut PersistentState, today: &str) -> bool {
+    let mut changed = false;
     if persistent.today_date != today {
-        persistent.today_date = today;
+        persistent.today_date = today.to_string();
         persistent.today_tasks = vec![String::new(); 3];
         persistent.task_statuses = vec!["none".to_string(); 3];
         persistent.completed_cycles = 0;
+        changed = true;
     }
+    changed |= persistent.today_tasks.len() != 3;
+    changed |= persistent.task_statuses.len() != 3;
     persistent.today_tasks.resize(3, String::new());
     persistent.task_statuses.resize(3, "none".to_string());
+    changed
+}
+
+fn ensure_today_fresh(persistent: &mut PersistentState) -> bool {
+    ensure_date_fresh(persistent, &today_string())
+}
+
+fn record_completed_cycle_for_date(persistent: &mut PersistentState, today: &str) {
+    ensure_date_fresh(persistent, today);
+    persistent.completed_cycles = persistent.completed_cycles.saturating_add(1);
+}
+
+fn record_completed_cycle(persistent: &mut PersistentState) {
+    record_completed_cycle_for_date(persistent, &today_string());
 }
 
 fn load_persistent_state(app: &AppHandle) -> PersistentState {
     let file = state_file_path(app);
     if let Ok(contents) = fs::read_to_string(&file) {
         if let Ok(mut state) = serde_json::from_str::<PersistentState>(&contents) {
-            ensure_today_fresh(&mut state);
+            if ensure_today_fresh(&mut state) {
+                let _ = persist_state(app, &state);
+            }
             return state;
         }
     }
@@ -245,7 +265,9 @@ fn local_quote_for_seed(seed: usize) -> Quote {
 fn build_snapshot(app: &AppHandle) -> Snapshot {
     let state = app.state::<AppState>();
     let mut persistent = state.persistent.lock().unwrap();
-    ensure_today_fresh(&mut persistent);
+    if ensure_today_fresh(&mut persistent) {
+        let _ = persist_state(app, &persistent);
+    }
     let runtime = state.runtime.lock().unwrap();
     Snapshot {
         phase: runtime.phase,
@@ -253,11 +275,24 @@ fn build_snapshot(app: &AppHandle) -> Snapshot {
         total_seconds: runtime.total_seconds,
         paused: runtime.paused,
         completed_cycles: persistent.completed_cycles,
+        today_date: persistent.today_date.clone(),
         settings: persistent.settings.clone(),
         today_tasks: persistent.today_tasks.clone(),
         task_statuses: persistent.task_statuses.clone(),
         quote: runtime.current_quote.clone(),
     }
+}
+
+fn refresh_daily_state(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    let mut persistent = state.persistent.lock().unwrap();
+    if !ensure_today_fresh(&mut persistent) {
+        return false;
+    }
+    if let Err(error) = persist_state(app, &persistent) {
+        eprintln!("failed to persist daily rollover: {error}");
+    }
+    true
 }
 
 fn build_tray_menu(
@@ -1267,7 +1302,7 @@ fn transition_to_break(app: &AppHandle) {
     {
         let state = app.state::<AppState>();
         let mut persistent = state.persistent.lock().unwrap();
-        persistent.completed_cycles = persistent.completed_cycles.saturating_add(1);
+        record_completed_cycle(&mut persistent);
         let _ = persist_state(app, &persistent);
     }
     {
@@ -1339,6 +1374,11 @@ fn tick_runtime(app: &AppHandle) {
         ExitBreak,
     }
 
+    // Date rollover is independent of the timer phase. This must run even when
+    // the timer is idle or paused so a hidden Windows window cannot retain the
+    // previous day's tasks indefinitely.
+    let day_changed = refresh_daily_state(app);
+
     let action = {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
@@ -1366,6 +1406,7 @@ fn tick_runtime(app: &AppHandle) {
     };
 
     match action {
+        Action::None if day_changed => emit_snapshot(app),
         Action::None => {}
         Action::Emit => emit_snapshot(app),
         Action::EnterBreak => transition_to_break(app),
@@ -1904,13 +1945,53 @@ mod tests {
         let mut state = PersistentState {
             today_date: "2001-01-01".to_string(),
             today_tasks: vec!["A".to_string()],
+            task_statuses: vec!["doing".to_string()],
             completed_cycles: 3,
             ..PersistentState::default()
         };
-        ensure_today_fresh(&mut state);
-        assert_eq!(state.today_date, today_string());
+        assert!(ensure_date_fresh(&mut state, "2001-01-02"));
+        assert_eq!(state.today_date, "2001-01-02");
         assert!(state.today_tasks.iter().all(|t| t.is_empty()));
+        assert!(state.task_statuses.iter().all(|status| status == "none"));
         assert_eq!(state.completed_cycles, 0);
+    }
+
+    #[test]
+    fn same_date_keeps_daily_state() {
+        let mut state = PersistentState {
+            today_date: "2001-01-02".to_string(),
+            today_tasks: vec!["A".to_string(), String::new(), String::new()],
+            task_statuses: vec![
+                "doing".to_string(),
+                "none".to_string(),
+                "none".to_string(),
+            ],
+            completed_cycles: 3,
+            ..PersistentState::default()
+        };
+
+        assert!(!ensure_date_fresh(&mut state, "2001-01-02"));
+        assert_eq!(state.today_tasks[0], "A");
+        assert_eq!(state.task_statuses[0], "doing");
+        assert_eq!(state.completed_cycles, 3);
+    }
+
+    #[test]
+    fn first_completed_cycle_after_midnight_counts_for_new_day() {
+        let mut state = PersistentState {
+            today_date: "2001-01-01".to_string(),
+            today_tasks: vec!["Yesterday".to_string(); 3],
+            task_statuses: vec!["done".to_string(); 3],
+            completed_cycles: 7,
+            ..PersistentState::default()
+        };
+
+        record_completed_cycle_for_date(&mut state, "2001-01-02");
+
+        assert_eq!(state.today_date, "2001-01-02");
+        assert_eq!(state.completed_cycles, 1);
+        assert!(state.today_tasks.iter().all(|task| task.is_empty()));
+        assert!(state.task_statuses.iter().all(|status| status == "none"));
     }
 
     #[test]
