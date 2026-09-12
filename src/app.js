@@ -28,6 +28,7 @@ const STRINGS = {
     statusFocus: "当前是工作阶段，不会锁定屏幕。",
     statusPaused: "已暂停，准备继续专注。",
     statusBreak: "休息阶段已开始，所有屏幕都处于锁定覆盖状态。",
+    statusLockPending: "正在恢复休息锁屏，将自动重试；显示成功后开始休息计时。",
     cyclesText: (n) => `今日完成 ${n} 轮`,
     quoteFallback: "“专注一点，世界会安静一些。”",
     settingsHeading: "偏好设置",
@@ -94,6 +95,7 @@ const STRINGS = {
     statusFocus: "Focus session in progress.",
     statusPaused: "Paused — ready to resume.",
     statusBreak: "Break started. All screens are locked.",
+    statusLockPending: "Restoring break screens. Retrying automatically; the break timer starts once ready.",
     cyclesText: (n) => `Today: ${n} round${n !== 1 ? "s" : ""}`,
     quoteFallback: '"Focus a little, and the world quiets down."',
     settingsHeading: "Preferences",
@@ -284,7 +286,7 @@ function statusCopy(snapshot) {
   if (snapshot.phase === "focus") {
     return snapshot.paused ? T.statusPaused : T.statusFocus;
   }
-  if (snapshot.phase === "break") return T.statusBreak;
+  if (snapshot.phase === "break") return snapshot.lockSetupPending ? T.statusLockPending : T.statusBreak;
   return T.statusIdle;
 }
 
@@ -355,7 +357,7 @@ function renderMain(snapshot) {
 function renderLock(snapshot) {
   const reminders = reminderPool();
   els.lockCountdown.textContent = formatDuration(snapshot.remainingSeconds);
-  els.lockStatus.textContent = T.lockStatus;
+  els.lockStatus.textContent = snapshot.lockSetupPending ? T.statusLockPending : T.lockStatus;
   els.lockQuote.textContent = quoteCopy(snapshot.quote);
   els.lockTasks.innerHTML = "";
   const rawTasks = snapshot.todayTasks || [];

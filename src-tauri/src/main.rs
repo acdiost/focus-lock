@@ -113,6 +113,7 @@ struct RuntimeState {
     total_seconds: u64,
     paused: bool,
     last_tick: Instant,
+    lock_setup_pending: bool,
     current_quote: Quote,
     closing_lock_windows: HashSet<String>,
     next_lock_generation: u64,
@@ -127,6 +128,7 @@ impl Default for RuntimeState {
             total_seconds: 0,
             paused: false,
             last_tick: Instant::now(),
+            lock_setup_pending: false,
             current_quote: local_quote_for_seed(0),
             closing_lock_windows: HashSet::new(),
             next_lock_generation: 0,
@@ -142,6 +144,7 @@ struct Snapshot {
     remaining_seconds: u64,
     total_seconds: u64,
     paused: bool,
+    lock_setup_pending: bool,
     completed_cycles: u32,
     today_date: String,
     settings: Settings,
@@ -274,6 +277,7 @@ fn build_snapshot(app: &AppHandle) -> Snapshot {
         remaining_seconds: runtime.remaining_seconds,
         total_seconds: runtime.total_seconds,
         paused: runtime.paused,
+        lock_setup_pending: runtime.lock_setup_pending,
         completed_cycles: persistent.completed_cycles,
         today_date: persistent.today_date.clone(),
         settings: persistent.settings.clone(),
@@ -985,6 +989,28 @@ fn lock_setup_error(message: impl Into<String>) -> tauri::Error {
 }
 
 #[cfg(target_os = "windows")]
+fn windows_is_on_current_virtual_desktop(
+    window: &tauri::WebviewWindow<tauri::Wry>,
+) -> tauri::Result<bool> {
+    use windows::Win32::{
+        System::Com::{CoCreateInstance, CLSCTX_ALL},
+        UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager},
+    };
+
+    let _apartment = WindowsComApartment::initialize().map_err(lock_setup_error)?;
+    unsafe {
+        let manager: IVirtualDesktopManager =
+            CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_ALL).map_err(|error| {
+                lock_setup_error(format!("failed to open virtual desktop manager: {error}"))
+            })?;
+        manager
+            .IsWindowOnCurrentVirtualDesktop(window.hwnd()?)
+            .map(|on_current| on_current.as_bool())
+            .map_err(|error| lock_setup_error(format!("failed to locate lock window desktop: {error}")))
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn windows_current_virtual_desktop_id() -> tauri::Result<windows::core::GUID> {
     use windows::Win32::{
         System::Com::{CoCreateInstance, CLSCTX_ALL},
@@ -1107,7 +1133,10 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
         // Tauri does not implement visible_on_all_workspaces on Windows. Move
         // each persistent WebView2 window to the desktop that is active now.
         #[cfg(target_os = "windows")]
-        if reused {
+        if reused && !windows_is_on_current_virtual_desktop(&window)? {
+            // A window already on this desktop needs no move. In particular,
+            // GetForegroundWindow can be null while Windows changes activation;
+            // that must not abort an otherwise valid break on this desktop.
             let desktop_id = match current_virtual_desktop {
                 Some(desktop_id) => desktop_id,
                 None => {
@@ -1274,6 +1303,7 @@ fn begin_focus(app: &AppHandle, focus_minutes: u64, break_minutes: u64) -> tauri
 }
 
 fn start_focus_runtime(runtime: &mut RuntimeState, focus_minutes: u64) {
+    runtime.lock_setup_pending = false;
     runtime.phase = Phase::Focus;
     runtime.remaining_seconds = focus_minutes.clamp(1, 180) * 60;
     runtime.total_seconds = runtime.remaining_seconds;
@@ -1285,6 +1315,7 @@ fn finish_break_runtime(runtime: &mut RuntimeState, settings: &Settings) -> bool
     if runtime.phase != Phase::Break {
         return false;
     }
+    runtime.lock_setup_pending = false;
 
     if settings.auto_restart {
         start_focus_runtime(runtime, settings.focus_minutes);
@@ -1322,14 +1353,30 @@ fn transition_to_break(app: &AppHandle) {
         runtime.paused = false;
         runtime.last_tick = Instant::now();
         runtime.current_quote = quote;
+        runtime.lock_setup_pending = true;
     }
-    if let Err(error) = sync_lock_windows(app) {
-        eprintln!("failed to enter break lock: {error}");
-        transition_to_idle(app);
-        return;
-    }
+    try_setup_break_lock(app);
     emit_snapshot(app);
     tauri::async_runtime::spawn(refresh_online_quote(app.clone()));
+}
+
+fn complete_lock_setup_attempt(runtime: &mut RuntimeState, succeeded: bool) {
+    if runtime.phase == Phase::Break && runtime.lock_setup_pending {
+        runtime.lock_setup_pending = !succeeded;
+        // Failed setup must not consume rest time. Start the full countdown
+        // only once the overlays are ready, and space retries five seconds apart.
+        runtime.last_tick = Instant::now();
+    }
+}
+
+fn try_setup_break_lock(app: &AppHandle) {
+    let result = sync_lock_windows(app);
+    if let Err(error) = &result {
+        eprintln!("failed to enter break lock; retrying in 5 seconds: {error}");
+    }
+    let state = app.state::<AppState>();
+    let mut runtime = state.runtime.lock().unwrap();
+    complete_lock_setup_attempt(&mut runtime, result.is_ok());
 }
 
 fn exit_break(app: &AppHandle) {
@@ -1358,6 +1405,7 @@ fn transition_to_idle(app: &AppHandle) {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
         runtime.phase = Phase::Idle;
+        runtime.lock_setup_pending = false;
         runtime.remaining_seconds = 0;
         runtime.total_seconds = 0;
         runtime.paused = false;
@@ -1366,14 +1414,44 @@ fn transition_to_idle(app: &AppHandle) {
     emit_snapshot(app);
 }
 
-fn tick_runtime(app: &AppHandle) {
-    enum Action {
-        None,
-        Emit,
-        EnterBreak,
-        ExitBreak,
-    }
+#[derive(Debug, PartialEq, Eq)]
+enum TimerAction {
+    None,
+    Emit,
+    EnterBreak,
+    ExitBreak,
+    RetryBreakLock,
+}
 
+fn advance_runtime(runtime: &mut RuntimeState, now: Instant) -> TimerAction {
+    if runtime.phase == Phase::Idle || runtime.paused {
+        return TimerAction::None;
+    }
+    let elapsed = now.duration_since(runtime.last_tick).as_secs();
+    if runtime.lock_setup_pending {
+        return if elapsed >= 5 {
+            TimerAction::RetryBreakLock
+        } else {
+            TimerAction::None
+        };
+    }
+    if elapsed == 0 {
+        return TimerAction::None;
+    }
+    runtime.last_tick = now;
+    runtime.remaining_seconds = runtime.remaining_seconds.saturating_sub(elapsed);
+    if runtime.remaining_seconds == 0 {
+        match runtime.phase {
+            Phase::Focus => TimerAction::EnterBreak,
+            Phase::Break => TimerAction::ExitBreak,
+            Phase::Idle => TimerAction::None,
+        }
+    } else {
+        TimerAction::Emit
+    }
+}
+
+fn tick_runtime(app: &AppHandle) {
     // Date rollover is independent of the timer phase. This must run even when
     // the timer is idle or paused so a hidden Windows window cannot retain the
     // previous day's tasks indefinitely.
@@ -1383,34 +1461,19 @@ fn tick_runtime(app: &AppHandle) {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
 
-        if runtime.phase == Phase::Idle || runtime.paused {
-            Action::None
-        } else {
-            let elapsed = runtime.last_tick.elapsed().as_secs();
-            if elapsed == 0 {
-                Action::None
-            } else {
-                runtime.last_tick = Instant::now();
-                runtime.remaining_seconds = runtime.remaining_seconds.saturating_sub(elapsed);
-                if runtime.remaining_seconds == 0 {
-                    match runtime.phase {
-                        Phase::Focus => Action::EnterBreak,
-                        Phase::Break => Action::ExitBreak,
-                        Phase::Idle => Action::None,
-                    }
-                } else {
-                    Action::Emit
-                }
-            }
-        }
+        advance_runtime(&mut runtime, Instant::now())
     };
 
     match action {
-        Action::None if day_changed => emit_snapshot(app),
-        Action::None => {}
-        Action::Emit => emit_snapshot(app),
-        Action::EnterBreak => transition_to_break(app),
-        Action::ExitBreak => exit_break(app),
+        TimerAction::None if day_changed => emit_snapshot(app),
+        TimerAction::None => {}
+        TimerAction::Emit => emit_snapshot(app),
+        TimerAction::EnterBreak => transition_to_break(app),
+        TimerAction::ExitBreak => exit_break(app),
+        TimerAction::RetryBreakLock => {
+            try_setup_break_lock(app);
+            emit_snapshot(app);
+        }
     }
 }
 
@@ -1992,6 +2055,116 @@ mod tests {
         assert_eq!(state.completed_cycles, 1);
         assert!(state.today_tasks.iter().all(|task| task.is_empty()));
         assert!(state.task_statuses.iter().all(|status| status == "none"));
+    }
+
+    #[test]
+    fn failed_lock_setup_retries_without_consuming_break_or_stopping_rotation() {
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            remaining_seconds: 300,
+            total_seconds: 300,
+            lock_setup_pending: true,
+            ..RuntimeState::default()
+        };
+        for _ in 0..3 {
+            complete_lock_setup_attempt(&mut runtime, false);
+            let last_tick = runtime.last_tick;
+            assert_eq!(advance_runtime(&mut runtime, last_tick + Duration::from_secs(4)), TimerAction::None);
+            assert_eq!(advance_runtime(&mut runtime, last_tick + Duration::from_secs(5)), TimerAction::RetryBreakLock);
+            assert_eq!(runtime.phase, Phase::Break);
+            assert_eq!(runtime.remaining_seconds, 300);
+        }
+
+        complete_lock_setup_attempt(&mut runtime, true);
+        assert!(!runtime.lock_setup_pending);
+        let ready_at = runtime.last_tick;
+        assert_eq!(advance_runtime(&mut runtime, ready_at + Duration::from_secs(1)), TimerAction::Emit);
+        assert_eq!(runtime.remaining_seconds, 299);
+        assert_eq!(advance_runtime(&mut runtime, ready_at + Duration::from_secs(300)), TimerAction::ExitBreak);
+        let settings = Settings { auto_restart: true, ..Settings::default() };
+        assert!(finish_break_runtime(&mut runtime, &settings));
+        assert_eq!(runtime.phase, Phase::Focus);
+        let focus_started = runtime.last_tick;
+        assert_eq!(advance_runtime(&mut runtime, focus_started + Duration::from_secs(25 * 60)), TimerAction::EnterBreak);
+    }
+
+    #[test]
+    fn ending_pending_break_cancels_retries() {
+        for auto_restart in [false, true] {
+            let mut runtime = RuntimeState {
+                phase: Phase::Break,
+                lock_setup_pending: true,
+                ..RuntimeState::default()
+            };
+            let settings = Settings { auto_restart, ..Settings::default() };
+            assert!(finish_break_runtime(&mut runtime, &settings));
+            // A late setup result cannot reactivate a cancelled retry.
+            complete_lock_setup_attempt(&mut runtime, false);
+            assert!(!runtime.lock_setup_pending);
+            let now = runtime.last_tick + Duration::from_secs(5);
+            assert_ne!(advance_runtime(&mut runtime, now), TimerAction::RetryBreakLock);
+        }
+    }
+
+    #[test]
+    fn auto_restart_survives_midnight_during_focus_or_break() {
+        for midnight_phase in [Phase::Focus, Phase::Break] {
+            let mut persistent = PersistentState {
+                today_date: "2001-01-01".to_string(),
+                today_tasks: vec!["Yesterday".to_string(); 3],
+                completed_cycles: 7,
+                settings: Settings {
+                    auto_restart: true,
+                    focus_minutes: 42,
+                    break_minutes: 8,
+                    ..Settings::default()
+                },
+                ..PersistentState::default()
+            };
+            let mut runtime = RuntimeState {
+                phase: midnight_phase,
+                remaining_seconds: 30,
+                total_seconds: if midnight_phase == Phase::Focus { 42 * 60 } else { 8 * 60 },
+                ..RuntimeState::default()
+            };
+            let last_tick = runtime.last_tick;
+
+            assert!(ensure_date_fresh(&mut persistent, "2001-01-02"));
+            assert!(persistent.settings.auto_restart);
+            assert_eq!(persistent.settings.break_minutes, 8);
+            assert_eq!(runtime.phase, midnight_phase);
+            assert_eq!(runtime.remaining_seconds, 30);
+            assert_eq!(runtime.last_tick, last_tick);
+            assert_eq!(persistent.completed_cycles, 0);
+
+            // A focus spanning midnight is counted on the new day; a break
+            // spanning midnight must not count yesterday's focus a second time.
+            if midnight_phase == Phase::Focus {
+                let now = runtime.last_tick + Duration::from_secs(30);
+                assert_eq!(advance_runtime(&mut runtime, now), TimerAction::EnterBreak);
+                record_completed_cycle_for_date(&mut persistent, "2001-01-02");
+                runtime.phase = Phase::Break;
+                runtime.remaining_seconds = 8 * 60;
+            }
+            let expected_cycles = u32::from(midnight_phase == Phase::Focus);
+            let break_end = runtime.last_tick + Duration::from_secs(runtime.remaining_seconds);
+            assert_eq!(advance_runtime(&mut runtime, break_end), TimerAction::ExitBreak);
+            assert!(finish_break_runtime(&mut runtime, &persistent.settings));
+            assert_eq!(runtime.phase, Phase::Focus);
+            assert_eq!(runtime.remaining_seconds, 42 * 60);
+            assert!(!runtime.paused);
+            assert_eq!(persistent.completed_cycles, expected_cycles);
+
+            // The following full round must also restart, with the new day's
+            // counter accumulating instead of being reset on every transition.
+            record_completed_cycle_for_date(&mut persistent, "2001-01-02");
+            runtime.phase = Phase::Break;
+            runtime.remaining_seconds = 0;
+            assert!(finish_break_runtime(&mut runtime, &persistent.settings));
+            assert_eq!(runtime.phase, Phase::Focus);
+            assert_eq!(runtime.remaining_seconds, 42 * 60);
+            assert_eq!(persistent.completed_cycles, expected_cycles + 1);
+        }
     }
 
     #[test]
