@@ -114,9 +114,12 @@ struct RuntimeState {
     paused: bool,
     last_tick: Instant,
     lock_setup_pending: bool,
+    lock_setup_error: Option<String>,
     current_quote: Quote,
     closing_lock_windows: HashSet<String>,
     next_lock_generation: u64,
+    lock_setup_failures: u32,
+    ready_lock_windows: HashSet<String>,
     focus_lock_window: Option<String>,
 }
 
@@ -129,9 +132,12 @@ impl Default for RuntimeState {
             paused: false,
             last_tick: Instant::now(),
             lock_setup_pending: false,
+            lock_setup_error: None,
             current_quote: local_quote_for_seed(0),
             closing_lock_windows: HashSet::new(),
             next_lock_generation: 0,
+            lock_setup_failures: 0,
+            ready_lock_windows: HashSet::new(),
             focus_lock_window: None,
         }
     }
@@ -145,6 +151,7 @@ struct Snapshot {
     total_seconds: u64,
     paused: bool,
     lock_setup_pending: bool,
+    lock_setup_error: Option<String>,
     completed_cycles: u32,
     today_date: String,
     settings: Settings,
@@ -278,6 +285,7 @@ fn build_snapshot(app: &AppHandle) -> Snapshot {
         total_seconds: runtime.total_seconds,
         paused: runtime.paused,
         lock_setup_pending: runtime.lock_setup_pending,
+        lock_setup_error: runtime.lock_setup_error.clone(),
         completed_cycles: persistent.completed_cycles,
         today_date: persistent.today_date.clone(),
         settings: persistent.settings.clone(),
@@ -983,7 +991,6 @@ fn should_reassert_lock_focus(runtime: &RuntimeState, label: &str) -> bool {
     runtime.phase == Phase::Break && runtime.focus_lock_window.as_deref() == Some(label)
 }
 
-#[cfg(not(target_os = "macos"))]
 fn lock_setup_error(message: impl Into<String>) -> tauri::Error {
     tauri::Error::Io(std::io::Error::other(message.into()))
 }
@@ -1065,7 +1072,7 @@ fn windows_move_to_virtual_desktop(
     Ok(())
 }
 
-fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
+fn sync_lock_windows(app: &AppHandle, lock_generation: u64) -> tauri::Result<()> {
     {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
@@ -1073,18 +1080,12 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
     }
     close_lock_windows(app);
 
-    let lock_generation = {
-        let state = app.state::<AppState>();
-        let mut runtime = state.runtime.lock().unwrap();
-        let generation = runtime.next_lock_generation;
-        runtime.next_lock_generation = runtime.next_lock_generation.wrapping_add(1);
-        generation
-    };
-
-    let Some(main_window) = app.get_webview_window("main") else {
-        return Ok(());
-    };
+    let main_window = app.get_webview_window("main")
+        .ok_or_else(|| lock_setup_error("main window is unavailable"))?;
     let monitors = main_window.available_monitors()?;
+    if monitors.is_empty() {
+        return Err(lock_setup_error("no monitors available for break lock"));
+    }
 
     // On macOS: hide menu bar and dock before any window is created so there is
     // no frame where the system chrome is visible behind the lock windows.
@@ -1101,6 +1102,13 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
         let label = active_lock_window_label(lock_generation, index);
         let size = monitor.size();
         let position = monitor.position();
+        {
+            let state = app.state::<AppState>();
+            let runtime = state.runtime.lock().unwrap();
+            if runtime.closing_lock_windows.contains(&label) {
+                return Err(lock_setup_error(format!("waiting for {label} to be destroyed")));
+            }
+        }
         let (window, reused) = if let Some(window) = app.get_webview_window(&label) {
             (window, true)
         } else {
@@ -1194,6 +1202,30 @@ fn sync_lock_windows(app: &AppHandle) -> tauri::Result<()> {
         }
 
         labels.push(label);
+    }
+
+    // A visible native window does not prove that its WebView is alive.
+    // Probe each page after its listeners and initial snapshot are ready.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let ready = {
+            let state = app.state::<AppState>();
+            let runtime = state.runtime.lock().unwrap();
+            if runtime.phase != Phase::Break || runtime.next_lock_generation != lock_generation {
+                return Err(lock_setup_error("lock setup cancelled"));
+            }
+            labels.iter().all(|label| runtime.ready_lock_windows.contains(label))
+        };
+        if ready { break; }
+        if Instant::now() >= deadline {
+            return Err(lock_setup_error(format!("lock page readiness timed out: {}", labels.join(", "))));
+        }
+        for label in &labels {
+            if let Some(window) = app.get_webview_window(label) {
+                window.eval(format!("window.__focusLockReady?.({lock_generation})"))?;
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
     }
 
     let focus_label = labels.first().cloned();
@@ -1303,6 +1335,10 @@ fn begin_focus(app: &AppHandle, focus_minutes: u64, break_minutes: u64) -> tauri
 }
 
 fn start_focus_runtime(runtime: &mut RuntimeState, focus_minutes: u64) {
+    runtime.next_lock_generation = runtime.next_lock_generation.wrapping_add(1);
+    runtime.lock_setup_failures = 0;
+    runtime.lock_setup_error = None;
+    runtime.focus_lock_window = None;
     runtime.lock_setup_pending = false;
     runtime.phase = Phase::Focus;
     runtime.remaining_seconds = focus_minutes.clamp(1, 180) * 60;
@@ -1316,6 +1352,9 @@ fn finish_break_runtime(runtime: &mut RuntimeState, settings: &Settings) -> bool
         return false;
     }
     runtime.lock_setup_pending = false;
+    runtime.lock_setup_error = None;
+    runtime.next_lock_generation = runtime.next_lock_generation.wrapping_add(1);
+    runtime.focus_lock_window = None;
 
     if settings.auto_restart {
         start_focus_runtime(runtime, settings.focus_minutes);
@@ -1354,7 +1393,10 @@ fn transition_to_break(app: &AppHandle) {
         runtime.last_tick = Instant::now();
         runtime.current_quote = quote;
         runtime.lock_setup_pending = true;
+        runtime.lock_setup_failures = 0;
+        runtime.lock_setup_error = None;
     }
+    emit_snapshot(app);
     try_setup_break_lock(app);
     emit_snapshot(app);
     tauri::async_runtime::spawn(refresh_online_quote(app.clone()));
@@ -1369,14 +1411,95 @@ fn complete_lock_setup_attempt(runtime: &mut RuntimeState, succeeded: bool) {
     }
 }
 
-fn try_setup_break_lock(app: &AppHandle) {
-    let result = sync_lock_windows(app);
-    if let Err(error) = &result {
-        eprintln!("failed to enter break lock; retrying in 5 seconds: {error}");
-    }
-    let state = app.state::<AppState>();
+#[tauri::command]
+fn lock_window_ready(window: tauri::WebviewWindow, generation: u64) {
+    let state = window.state::<AppState>();
     let mut runtime = state.runtime.lock().unwrap();
-    complete_lock_setup_attempt(&mut runtime, result.is_ok());
+    if window.label().starts_with(LOCK_PREFIX)
+        && runtime.phase == Phase::Break
+        && runtime.lock_setup_pending
+        && runtime.next_lock_generation == generation
+    {
+        runtime.ready_lock_windows.insert(window.label().to_string());
+    }
+}
+
+fn record_lock_failure(runtime: &mut RuntimeState, error: String) -> bool {
+    runtime.lock_setup_failures += 1;
+    runtime.lock_setup_error = Some(error);
+    if runtime.lock_setup_failures < 3 { return false; }
+    runtime.phase = Phase::Idle;
+    runtime.lock_setup_pending = false;
+    runtime.remaining_seconds = 0;
+    runtime.total_seconds = 0;
+    runtime.paused = false;
+    runtime.focus_lock_window = None;
+    true
+}
+
+fn finish_lock_setup(runtime: &mut RuntimeState, generation: u64, result: Result<(), String>) -> Option<bool> {
+    if runtime.next_lock_generation != generation || runtime.phase != Phase::Break {
+        return None;
+    }
+    complete_lock_setup_attempt(runtime, result.is_ok());
+    Some(match result {
+        Ok(()) => { runtime.lock_setup_error = None; false }
+        Err(error) => record_lock_failure(runtime, error),
+    })
+}
+
+fn try_setup_break_lock(app: &AppHandle) {
+    let generation = {
+        let state = app.state::<AppState>();
+        let mut runtime = state.runtime.lock().unwrap();
+        if runtime.phase != Phase::Break || !runtime.lock_setup_pending { return; }
+        runtime.next_lock_generation = runtime.next_lock_generation.wrapping_add(1);
+        runtime.ready_lock_windows.clear();
+        runtime.next_lock_generation
+    };
+    let result = sync_lock_windows(app, generation);
+    if let Err(error) = &result {
+        let message = format!("{}: break lock attempt {generation}: {error}\n", Local::now().to_rfc3339());
+        eprintln!("{message}");
+        if let Ok(dir) = app.path().app_config_dir() {
+            let _ = fs::create_dir_all(&dir);
+            let _ = fs::write(dir.join("lock-error.log"), message);
+        }
+        // Retire unhealthy WebViews, including after cancellation. A later round
+        // must not reuse one whose initialization or desktop operations failed.
+        #[cfg(target_os = "windows")]
+        {
+            let windows: Vec<_> = app.webview_windows().into_iter()
+                .filter(|(label, _)| label.starts_with(LOCK_PREFIX)).collect();
+            {
+                let state = app.state::<AppState>();
+                let mut runtime = state.runtime.lock().unwrap();
+                runtime.focus_lock_window = None;
+                runtime.closing_lock_windows.extend(windows.iter().map(|(label, _)| label.clone()));
+            }
+            for (label, window) in windows {
+                let _ = window.hide();
+                if let Err(error) = window.destroy() {
+                    eprintln!("failed to destroy unhealthy lock window {label}: {error}");
+                    // Permit another destruction attempt instead of leaving a
+                    // label permanently marked as awaiting a Destroyed event.
+                    let state = app.state::<AppState>();
+                    state.runtime.lock().unwrap().closing_lock_windows.remove(&label);
+                }
+            }
+        }
+    }
+    let exhausted = {
+        let state = app.state::<AppState>();
+        let mut runtime = state.runtime.lock().unwrap();
+        finish_lock_setup(&mut runtime, generation, result.map_err(|error| error.to_string()))
+    };
+    if exhausted != Some(false) {
+        close_lock_windows(app);
+    }
+    if exhausted == Some(true) {
+        show_main_window(app);
+    }
 }
 
 fn exit_break(app: &AppHandle) {
@@ -1400,17 +1523,20 @@ fn exit_break(app: &AppHandle) {
 }
 
 fn transition_to_idle(app: &AppHandle) {
-    close_lock_windows(app);
     {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
+        runtime.next_lock_generation = runtime.next_lock_generation.wrapping_add(1);
+        runtime.focus_lock_window = None;
         runtime.phase = Phase::Idle;
         runtime.lock_setup_pending = false;
+        runtime.lock_setup_error = None;
         runtime.remaining_seconds = 0;
         runtime.total_seconds = 0;
         runtime.paused = false;
         runtime.last_tick = Instant::now();
     }
+    close_lock_windows(app);
     emit_snapshot(app);
 }
 
@@ -1965,6 +2091,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            lock_window_ready,
             start_pomodoro,
             pause_pomodoro,
             resume_pomodoro,
@@ -2055,6 +2182,55 @@ mod tests {
         assert_eq!(state.completed_cycles, 1);
         assert!(state.today_tasks.iter().all(|task| task.is_empty()));
         assert!(state.task_statuses.iter().all(|status| status == "none"));
+    }
+
+    #[test]
+    fn persistent_lock_failure_stops_and_next_round_recovers() {
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            remaining_seconds: 180,
+            total_seconds: 180,
+            lock_setup_pending: true,
+            next_lock_generation: 7,
+            ..RuntimeState::default()
+        };
+        for attempt in 1..=3 {
+            assert_eq!(finish_lock_setup(&mut runtime, 7, Err("page timeout".into())), Some(attempt == 3));
+            if attempt < 3 {
+                assert_eq!(runtime.remaining_seconds, 180);
+                assert_eq!(advance_runtime(&mut runtime.clone(), runtime.last_tick + Duration::from_secs(5)), TimerAction::RetryBreakLock);
+            }
+        }
+        assert_eq!(runtime.phase, Phase::Idle);
+        assert!(!runtime.lock_setup_pending);
+        assert_eq!(runtime.lock_setup_error.as_deref(), Some("page timeout"));
+        assert_eq!(advance_runtime(&mut runtime.clone(), runtime.last_tick + Duration::from_secs(60)), TimerAction::None);
+        start_focus_runtime(&mut runtime, 25);
+        assert_eq!(runtime.lock_setup_failures, 0);
+        assert!(runtime.lock_setup_error.is_none());
+        let now = runtime.last_tick + Duration::from_secs(1);
+        assert_eq!(advance_runtime(&mut runtime, now), TimerAction::Emit);
+        assert_eq!(runtime.remaining_seconds, 1499);
+    }
+
+    #[test]
+    fn stale_lock_result_cannot_complete_a_later_break() {
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            lock_setup_pending: true,
+            next_lock_generation: 8,
+            remaining_seconds: 180,
+            ..RuntimeState::default()
+        };
+        assert_eq!(finish_lock_setup(&mut runtime, 7, Ok(())), None);
+        assert_eq!(finish_lock_setup(&mut runtime, 7, Err("old failure".into())), None);
+        assert!(runtime.lock_setup_pending);
+        assert_eq!(runtime.lock_setup_failures, 0);
+        assert_eq!(runtime.remaining_seconds, 180);
+        assert_eq!(finish_lock_setup(&mut runtime, 8, Ok(())), Some(false));
+        let now = runtime.last_tick + Duration::from_secs(1);
+        assert_eq!(advance_runtime(&mut runtime, now), TimerAction::Emit);
+        assert_eq!(runtime.remaining_seconds, 179);
     }
 
     #[test]

@@ -283,6 +283,11 @@ function phaseLabel(phase) {
 }
 
 function statusCopy(snapshot) {
+  if (snapshot.lockSetupError && snapshot.phase === "idle") {
+    return state.lang === "en"
+      ? `Break screen failed after 3 attempts. Please start again. Error: ${snapshot.lockSetupError}`
+      : `休息锁屏连续 3 次失败，已停止本轮，请重新开始。错误：${snapshot.lockSetupError}`;
+  }
   if (snapshot.phase === "focus") {
     return snapshot.paused ? T.statusPaused : T.statusFocus;
   }
@@ -349,8 +354,8 @@ function renderMain(snapshot) {
   els.quoteAuthor.textContent = quote?.author ? `— ${quote.author}` : "";
 
   els.startBtn.disabled = snapshot.phase !== "idle";
-  els.pauseBtn.disabled = snapshot.phase === "idle" || snapshot.paused;
-  els.resumeBtn.disabled = snapshot.phase === "idle" || !snapshot.paused;
+  els.pauseBtn.disabled = snapshot.phase !== "focus" || snapshot.paused;
+  els.resumeBtn.disabled = snapshot.phase !== "focus" || !snapshot.paused;
   els.cancelBtn.disabled = snapshot.phase === "idle";
 }
 
@@ -648,6 +653,23 @@ async function init() {
       const reminders = reminderPool();
       els.lockReminder.textContent = reminders[state.reminderIndex % reminders.length];
     }, 6000);
+  }
+  if (isLockView) {
+    let acknowledgedGeneration = null;
+    let probePending = false;
+    window.__focusLockReady = async (generation) => {
+      if (probePending || acknowledgedGeneration === generation) return;
+      probePending = true;
+      try {
+        await loadSnapshot();
+        await invoke("lock_window_ready", { generation });
+        acknowledgedGeneration = generation;
+      } catch (error) {
+        console.error("Lock readiness probe failed", error);
+      } finally {
+        probePending = false;
+      }
+    };
   }
   if (!isLockView) {
     await listen("open://about", () => {
