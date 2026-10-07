@@ -291,7 +291,12 @@ function statusCopy(snapshot) {
   if (snapshot.phase === "focus") {
     return snapshot.paused ? T.statusPaused : T.statusFocus;
   }
-  if (snapshot.phase === "break") return snapshot.lockSetupPending ? T.statusLockPending : T.statusBreak;
+  if (snapshot.phase === "break") {
+    if (!snapshot.lockSetupPending) return T.statusBreak;
+    return snapshot.lockSetupError
+      ? `${T.statusLockPending} (${snapshot.lockSetupError})`
+      : T.statusLockPending;
+  }
   return T.statusIdle;
 }
 

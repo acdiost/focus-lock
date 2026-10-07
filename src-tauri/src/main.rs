@@ -1072,20 +1072,17 @@ fn windows_move_to_virtual_desktop(
     Ok(())
 }
 
-fn sync_lock_windows(app: &AppHandle, lock_generation: u64) -> tauri::Result<()> {
+fn sync_lock_windows(
+    app: &AppHandle,
+    lock_generation: u64,
+    monitors: Vec<tauri::Monitor>,
+) -> tauri::Result<()> {
     {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
         runtime.focus_lock_window = None;
     }
     close_lock_windows(app);
-
-    let main_window = app.get_webview_window("main")
-        .ok_or_else(|| lock_setup_error("main window is unavailable"))?;
-    let monitors = main_window.available_monitors()?;
-    if monitors.is_empty() {
-        return Err(lock_setup_error("no monitors available for break lock"));
-    }
 
     // On macOS: hide menu bar and dock before any window is created so there is
     // no frame where the system chrome is visible behind the lock windows.
@@ -1109,39 +1106,42 @@ fn sync_lock_windows(app: &AppHandle, lock_generation: u64) -> tauri::Result<()>
                 return Err(lock_setup_error(format!("waiting for {label} to be destroyed")));
             }
         }
-        let (window, reused) = if let Some(window) = app.get_webview_window(&label) {
-            (window, true)
+        let window = if let Some(window) = app.get_webview_window(&label) {
+            window
         } else {
-            (
-                WebviewWindowBuilder::new(
-                    app,
-                    label.clone(),
-                    WebviewUrl::App("index.html#lock".into()),
-                )
-                .decorations(false)
-                .resizable(false)
-                .skip_taskbar(true)
-                .visible_on_all_workspaces(true)
-                .visible(false)
-                .title("Focus Lock Break")
-                .shadow(false)
-                .inner_size(1.0, 1.0)
-                .position(0.0, 0.0)
-                .build()?,
-                false,
+            WebviewWindowBuilder::new(
+                app,
+                label.clone(),
+                WebviewUrl::App("index.html#lock".into()),
             )
+            .decorations(false)
+            .resizable(false)
+            .skip_taskbar(true)
+            .visible_on_all_workspaces(true)
+            .visible(false)
+            .title("Focus Lock Break")
+            .shadow(false)
+            .inner_size(1.0, 1.0)
+            .position(0.0, 0.0)
+            .build()
+            .map_err(|error| lock_setup_error(format!("failed to create {label}: {error}")))?
         };
 
         // Correct with exact physical-pixel values: avoids 1-2px rounding errors
         // caused by dividing physical coords by a fractional scale factor, which
         // on Windows dual-monitor setups with mismatched DPI causes edge flicker.
-        window.set_size(*size)?;
-        window.set_position(*position)?;
+        window.set_size(*size)
+            .map_err(|error| lock_setup_error(format!("failed to resize {label}: {error}")))?;
+        window.set_position(*position)
+            .map_err(|error| lock_setup_error(format!("failed to position {label}: {error}")))?;
 
         // Tauri does not implement visible_on_all_workspaces on Windows. Move
         // each persistent WebView2 window to the desktop that is active now.
         #[cfg(target_os = "windows")]
-        if reused && !windows_is_on_current_virtual_desktop(&window)? {
+        if !windows_is_on_current_virtual_desktop(&window)? {
+            // Recreated windows need this check too: after an unhealthy WebView
+            // is retired, its replacement can belong to the main window's old
+            // desktop instead of the desktop currently in use.
             // A window already on this desktop needs no move. In particular,
             // GetForegroundWindow can be null while Windows changes activation;
             // that must not abort an otherwise valid break on this desktop.
@@ -1155,8 +1155,6 @@ fn sync_lock_windows(app: &AppHandle, lock_generation: u64) -> tauri::Result<()>
             };
             windows_move_to_virtual_desktop(&window, &desktop_id)?;
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = reused;
 
         // tao applies these operations asynchronously on macOS. Do not move
         // the WebView into its NSPanel until the source NSWindow has the final
@@ -1206,7 +1204,9 @@ fn sync_lock_windows(app: &AppHandle, lock_generation: u64) -> tauri::Result<()>
 
     // A visible native window does not prove that its WebView is alive.
     // Probe each page after its listeners and initial snapshot are ready.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Allow cold WebViews and previously hidden pages time to initialize when
+    // the machine is busy or has just resumed. Rest time remains paused.
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let ready = {
             let state = app.state::<AppState>();
@@ -1222,7 +1222,8 @@ fn sync_lock_windows(app: &AppHandle, lock_generation: u64) -> tauri::Result<()>
         }
         for label in &labels {
             if let Some(window) = app.get_webview_window(label) {
-                window.eval(format!("window.__focusLockReady?.({lock_generation})"))?;
+                window.eval(format!("window.__focusLockReady?.({lock_generation})"))
+                    .map_err(|error| lock_setup_error(format!("failed to probe {label}: {error}")))?;
             }
         }
         thread::sleep(Duration::from_millis(100));
@@ -1448,6 +1449,20 @@ fn finish_lock_setup(runtime: &mut RuntimeState, generation: u64, result: Result
     })
 }
 
+fn defer_lock_setup_for_missing_displays(runtime: &mut RuntimeState, generation: u64, now: Instant) {
+    if runtime.phase != Phase::Break
+        || !runtime.lock_setup_pending
+        || runtime.next_lock_generation != generation
+    {
+        return;
+    }
+    // Display enumeration can be empty while the machine is asleep or displays
+    // are reconnecting. Wait without exhausting the WebView failure budget or
+    // consuming rest time; the timer will check again in five seconds.
+    runtime.lock_setup_error = Some("Waiting for displays to become available".to_string());
+    runtime.last_tick = now;
+}
+
 fn try_setup_break_lock(app: &AppHandle) {
     let generation = {
         let state = app.state::<AppState>();
@@ -1457,7 +1472,16 @@ fn try_setup_break_lock(app: &AppHandle) {
         runtime.ready_lock_windows.clear();
         runtime.next_lock_generation
     };
-    let result = sync_lock_windows(app, generation);
+    let result = match app.available_monitors() {
+        Ok(monitors) if monitors.is_empty() => {
+            let state = app.state::<AppState>();
+            let mut runtime = state.runtime.lock().unwrap();
+            defer_lock_setup_for_missing_displays(&mut runtime, generation, Instant::now());
+            return;
+        }
+        Ok(monitors) => sync_lock_windows(app, generation, monitors),
+        Err(error) => Err(error),
+    };
     if let Err(error) = &result {
         let message = format!("{}: break lock attempt {generation}: {error}\n", Local::now().to_rfc3339());
         eprintln!("{message}");
@@ -1564,7 +1588,9 @@ fn advance_runtime(runtime: &mut RuntimeState, now: Instant) -> TimerAction {
     if elapsed == 0 {
         return TimerAction::None;
     }
-    runtime.last_tick = now;
+    // Preserve fractional elapsed time. Resetting to `now` discards the work
+    // between ticks, accumulating drift during long unattended runs.
+    runtime.last_tick += Duration::from_secs(elapsed);
     runtime.remaining_seconds = runtime.remaining_seconds.saturating_sub(elapsed);
     if runtime.remaining_seconds == 0 {
         match runtime.phase {
@@ -2182,6 +2208,78 @@ mod tests {
         assert_eq!(state.completed_cycles, 1);
         assert!(state.today_tasks.iter().all(|task| task.is_empty()));
         assert!(state.task_statuses.iter().all(|status| status == "none"));
+    }
+
+    #[test]
+    fn long_running_timer_preserves_fractional_ticks() {
+        let mut runtime = RuntimeState::default();
+        start_focus_runtime(&mut runtime, 180);
+        let started = runtime.last_tick;
+
+        // Each poll includes 100ms of scheduling/render overhead. Over almost
+        // two hours, throwing that fraction away would lose 650 seconds.
+        for tick in 1..=6500 {
+            let now = started + Duration::from_millis(tick * 1100);
+            assert_eq!(advance_runtime(&mut runtime, now), TimerAction::Emit);
+            assert_eq!(runtime.remaining_seconds, 10800 - tick * 1100 / 1000);
+        }
+        assert_eq!(runtime.remaining_seconds, 3650);
+        assert_eq!(advance_runtime(&mut runtime, started + Duration::from_secs(10800)), TimerAction::EnterBreak);
+    }
+
+    #[test]
+    fn missing_displays_wait_without_exhausting_retries_and_recover() {
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            remaining_seconds: 300,
+            total_seconds: 300,
+            lock_setup_pending: true,
+            next_lock_generation: 7,
+            // Missing displays must not turn two earlier real errors into a
+            // third failure, or reset their failure history.
+            lock_setup_failures: 2,
+            ..RuntimeState::default()
+        };
+        for _ in 0..720 {
+            let checked_at = runtime.last_tick + Duration::from_secs(5);
+            defer_lock_setup_for_missing_displays(&mut runtime, 7, checked_at);
+            assert_eq!(runtime.phase, Phase::Break);
+            assert_eq!(runtime.remaining_seconds, 300);
+            assert_eq!(runtime.lock_setup_failures, 2);
+            assert!(runtime.lock_setup_pending);
+            assert_eq!(advance_runtime(&mut runtime, checked_at + Duration::from_secs(4)), TimerAction::None);
+            assert_eq!(advance_runtime(&mut runtime, checked_at + Duration::from_secs(5)), TimerAction::RetryBreakLock);
+        }
+        assert_eq!(finish_lock_setup(&mut runtime, 7, Ok(())), Some(false));
+        assert!(runtime.lock_setup_error.is_none());
+        assert!(!runtime.lock_setup_pending);
+        let ready_at = runtime.last_tick;
+        assert_eq!(advance_runtime(&mut runtime, ready_at + Duration::from_secs(300)), TimerAction::ExitBreak);
+        assert!(finish_break_runtime(&mut runtime, &Settings { auto_restart: true, ..Settings::default() }));
+        assert_eq!(runtime.phase, Phase::Focus);
+    }
+
+    #[test]
+    fn stale_missing_display_result_cannot_delay_a_new_round() {
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            next_lock_generation: 8,
+            lock_setup_pending: true,
+            ..RuntimeState::default()
+        };
+        let original_tick = runtime.last_tick;
+        defer_lock_setup_for_missing_displays(&mut runtime, 7, original_tick + Duration::from_secs(5));
+        assert_eq!(runtime.last_tick, original_tick);
+        assert!(runtime.lock_setup_error.is_none());
+
+        start_focus_runtime(&mut runtime, 25);
+        let focus_started = runtime.last_tick;
+        let generation = runtime.next_lock_generation;
+        defer_lock_setup_for_missing_displays(&mut runtime, generation, focus_started + Duration::from_secs(5));
+        assert_eq!(runtime.last_tick, focus_started);
+        assert_eq!(runtime.phase, Phase::Focus);
+        assert!(!runtime.lock_setup_pending);
+        assert!(runtime.lock_setup_error.is_none());
     }
 
     #[test]
