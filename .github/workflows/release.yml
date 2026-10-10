@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -73,8 +70,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: FocusLock ${{ github.event.inputs.tag || github.ref_name }}
+          tagName: ${{ github.event.inputs.tag }}
+          releaseName: FocusLock ${{ github.event.inputs.tag }}
           releaseBody: |
             See the assets below to download this version.
           releaseDraft: true
