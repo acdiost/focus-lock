@@ -1,0 +1,2 @@
+# Disable shared ECC Git hooks for this repository.
+# Run tests and desktop packaging manually; releases use workflow_dispatch.
