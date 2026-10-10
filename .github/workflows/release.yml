@@ -79,4 +79,4 @@ jobs:
             See the assets below to download this version.
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} -- --locked

@@ -4,7 +4,8 @@
 use std::{
     collections::HashSet,
     fs,
-    path::PathBuf,
+    io::Write,
+    path::{Path, PathBuf},
     sync::Mutex,
     thread,
     time::{Duration, Instant},
@@ -117,6 +118,8 @@ struct RuntimeState {
     lock_setup_error: Option<String>,
     current_quote: Quote,
     closing_lock_windows: HashSet<String>,
+    #[cfg(any(target_os = "windows", test))]
+    lock_window_epoch: u64,
     next_lock_generation: u64,
     lock_setup_failures: u32,
     ready_lock_windows: HashSet<String>,
@@ -135,6 +138,8 @@ impl Default for RuntimeState {
             lock_setup_error: None,
             current_quote: local_quote_for_seed(0),
             closing_lock_windows: HashSet::new(),
+            #[cfg(any(target_os = "windows", test))]
+            lock_window_epoch: 0,
             next_lock_generation: 0,
             lock_setup_failures: 0,
             ready_lock_windows: HashSet::new(),
@@ -971,10 +976,40 @@ fn lock_window_label(generation: u64, monitor_index: usize) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn active_lock_window_label(_generation: u64, monitor_index: usize) -> String {
+fn active_lock_window_label(epoch: u64, monitor_index: usize) -> String {
     // Stable labels let each monitor reuse the same hidden WebView2 window on
-    // every break instead of entering the close/create race again.
-    format!("{LOCK_PREFIX}windows-{monitor_index}")
+    // every healthy break. Recovery changes the epoch so a replacement never
+    // waits for an unhealthy window's asynchronous teardown.
+    windows_lock_window_label(epoch, monitor_index)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_lock_window_label(epoch: u64, monitor_index: usize) -> String {
+    if epoch == 0 {
+        format!("{LOCK_PREFIX}windows-{monitor_index}")
+    } else {
+        format!("{LOCK_PREFIX}windows-{epoch}-{monitor_index}")
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn prepare_windows_lock_recovery(
+    runtime: &mut RuntimeState,
+    labels: impl IntoIterator<Item = String>,
+) -> HashSet<String> {
+    runtime.lock_window_epoch = runtime.lock_window_epoch.wrapping_add(1);
+    runtime.focus_lock_window = None;
+    // Repeating destroy requests can race a Destroyed event and reintroduce a
+    // closing marker after the window has already disappeared.
+    labels.into_iter()
+        .filter(|label| runtime.closing_lock_windows.insert(label.clone()))
+        .collect()
+}
+
+fn reconcile_closing_lock_windows(runtime: &mut RuntimeState, live_labels: &HashSet<String>) {
+    // A delayed or missed callback must not leave an absent window marked as
+    // closing forever. Keep authorization for windows that still exist.
+    runtime.closing_lock_windows.retain(|label| live_labels.contains(label));
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1077,11 +1112,17 @@ fn sync_lock_windows(
     lock_generation: u64,
     monitors: Vec<tauri::Monitor>,
 ) -> tauri::Result<()> {
-    {
+    let live_labels = app.webview_windows().into_keys().collect();
+    let label_generation = {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().unwrap();
+        reconcile_closing_lock_windows(&mut runtime, &live_labels);
         runtime.focus_lock_window = None;
-    }
+        #[cfg(target_os = "windows")]
+        { runtime.lock_window_epoch }
+        #[cfg(not(target_os = "windows"))]
+        { lock_generation }
+    };
     close_lock_windows(app);
 
     // On macOS: hide menu bar and dock before any window is created so there is
@@ -1096,7 +1137,7 @@ fn sync_lock_windows(
         // Windows uses a stable label to reuse WebView2 windows between rounds.
         // Other platforms keep generation-based labels so asynchronous teardown
         // from an old break cannot collide with a newly created window.
-        let label = active_lock_window_label(lock_generation, index);
+        let label = active_lock_window_label(label_generation, index);
         let size = monitor.size();
         let position = monitor.position();
         {
@@ -1463,6 +1504,13 @@ fn defer_lock_setup_for_missing_displays(runtime: &mut RuntimeState, generation:
     runtime.last_tick = now;
 }
 
+fn write_lock_error_log(dir: &Path, message: &str) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
+    let mut file = fs::OpenOptions::new().create(true).append(true)
+        .open(dir.join("lock-error.log"))?;
+    file.write_all(message.as_bytes())
+}
+
 fn try_setup_break_lock(app: &AppHandle) {
     let generation = {
         let state = app.state::<AppState>();
@@ -1486,8 +1534,7 @@ fn try_setup_break_lock(app: &AppHandle) {
         let message = format!("{}: break lock attempt {generation}: {error}\n", Local::now().to_rfc3339());
         eprintln!("{message}");
         if let Ok(dir) = app.path().app_config_dir() {
-            let _ = fs::create_dir_all(&dir);
-            let _ = fs::write(dir.join("lock-error.log"), message);
+            let _ = write_lock_error_log(&dir, &message);
         }
         // Retire unhealthy WebViews, including after cancellation. A later round
         // must not reuse one whose initialization or desktop operations failed.
@@ -1495,16 +1542,27 @@ fn try_setup_break_lock(app: &AppHandle) {
         {
             let windows: Vec<_> = app.webview_windows().into_iter()
                 .filter(|(label, _)| label.starts_with(LOCK_PREFIX)).collect();
-            {
+            let to_destroy = {
                 let state = app.state::<AppState>();
                 let mut runtime = state.runtime.lock().unwrap();
-                runtime.focus_lock_window = None;
-                runtime.closing_lock_windows.extend(windows.iter().map(|(label, _)| label.clone()));
-            }
+                prepare_windows_lock_recovery(
+                    &mut runtime, windows.iter().map(|(label, _)| label.clone())
+                )
+            };
             for (label, window) in windows {
+                if !to_destroy.contains(&label) {
+                    continue;
+                }
                 let _ = window.hide();
                 if let Err(error) = window.destroy() {
-                    eprintln!("failed to destroy unhealthy lock window {label}: {error}");
+                    let message = format!(
+                        "{}: failed to destroy unhealthy lock window {label}: {error}\n",
+                        Local::now().to_rfc3339()
+                    );
+                    eprintln!("{message}");
+                    if let Ok(dir) = app.path().app_config_dir() {
+                        let _ = write_lock_error_log(&dir, &message);
+                    }
                     // Permit another destruction attempt instead of leaving a
                     // label permanently marked as awaiting a Destroyed event.
                     let state = app.state::<AppState>();
@@ -2510,6 +2568,98 @@ mod tests {
         assert!(!should_prevent_lock_close(&runtime, &old_label));
         assert!(should_prevent_lock_close(&runtime, &new_label));
         assert_ne!(old_label, new_label);
+    }
+
+    #[test]
+    fn missing_destroy_event_does_not_block_replacement_lock_window() {
+        let label = "lock-screen-windows-0".to_string();
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            ..RuntimeState::default()
+        };
+        runtime.closing_lock_windows.insert(label.clone());
+
+        reconcile_closing_lock_windows(&mut runtime, &HashSet::new());
+
+        assert!(!runtime.closing_lock_windows.contains(&label));
+        assert!(should_prevent_lock_close(&runtime, &label));
+    }
+
+    #[test]
+    fn pending_destruction_stays_authorized_until_window_disappears() {
+        let closing_label = "lock-screen-windows-0".to_string();
+        let live_label = "lock-screen-windows-1".to_string();
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            ..RuntimeState::default()
+        };
+        runtime.closing_lock_windows.insert(closing_label.clone());
+        runtime.closing_lock_windows.insert("lock-screen-windows-2".to_string());
+        let live_labels = HashSet::from([closing_label.clone(), live_label.clone()]);
+
+        reconcile_closing_lock_windows(&mut runtime, &live_labels);
+
+        assert_eq!(runtime.closing_lock_windows, HashSet::from([closing_label.clone()]));
+        assert!(!should_prevent_lock_close(&runtime, &closing_label));
+        assert!(should_prevent_lock_close(&runtime, &live_label));
+
+        reconcile_closing_lock_windows(&mut runtime, &HashSet::from([live_label]));
+        assert!(runtime.closing_lock_windows.is_empty());
+    }
+
+    #[test]
+    fn lock_error_log_preserves_original_failure_across_retries() {
+        let dir = std::env::temp_dir().join(format!(
+            "focus-lock-log-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let first = "first attempt: lock page readiness timed out\n";
+        let retry = "retry: waiting for lock-screen-windows-0 to be destroyed\n";
+
+        write_lock_error_log(&dir, first).unwrap();
+        write_lock_error_log(&dir, retry).unwrap();
+        let contents = fs::read_to_string(dir.join("lock-error.log")).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(contents, format!("{first}{retry}"));
+    }
+
+    #[test]
+    fn windows_recovery_can_replace_window_whose_destruction_is_stalled() {
+        let mut runtime = RuntimeState {
+            phase: Phase::Break,
+            ..RuntimeState::default()
+        };
+        let old_label = windows_lock_window_label(runtime.lock_window_epoch, 0);
+        runtime.focus_lock_window = Some(old_label.clone());
+        let to_destroy = prepare_windows_lock_recovery(&mut runtime, [old_label.clone()]);
+        let new_label = windows_lock_window_label(runtime.lock_window_epoch, 0);
+
+        assert_eq!(to_destroy, HashSet::from([old_label.clone()]));
+        assert_ne!(new_label, old_label);
+        assert!(!should_prevent_lock_close(&runtime, &old_label));
+        assert!(should_prevent_lock_close(&runtime, &new_label));
+        assert!(runtime.focus_lock_window.is_none());
+
+        // Another setup failure must not queue destruction of the old window
+        // again, even while its asynchronous teardown is still outstanding.
+        let to_destroy = prepare_windows_lock_recovery(
+            &mut runtime, [old_label.clone(), new_label.clone()]
+        );
+        assert_eq!(to_destroy, HashSet::from([new_label.clone()]));
+        let replacement = windows_lock_window_label(runtime.lock_window_epoch, 0);
+        assert_ne!(replacement, old_label);
+        assert_ne!(replacement, new_label);
+    }
+
+    #[test]
+    fn healthy_windows_labels_remain_stable_between_breaks() {
+        let mut runtime = RuntimeState::default();
+        let label = windows_lock_window_label(runtime.lock_window_epoch, 0);
+        runtime.next_lock_generation += 1;
+        assert_eq!(label, windows_lock_window_label(runtime.lock_window_epoch, 0));
+        assert_ne!(label, windows_lock_window_label(runtime.lock_window_epoch, 1));
     }
 
     #[test]
