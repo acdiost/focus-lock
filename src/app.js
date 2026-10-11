@@ -69,6 +69,8 @@ const STRINGS = {
     lockFallbackTask: "休息结束后，回来处理今天最重要的一件事。",
     muteMediaBtn: "静音",
     unmuteMediaBtn: "恢复声音",
+    darkModeBtn: "暗色模式",
+    lightModeBtn: "亮色模式",
     endBreakBtn: "提前结束休息",
     waterReminder: "现在去喝一杯水，让眼睛离开屏幕。",
     standReminder: "站起来活动一下，肩颈和腿部都需要切换姿势。",
@@ -137,6 +139,8 @@ const STRINGS = {
     lockFallbackTask: "When the break ends, come back and tackle the most important thing.",
     muteMediaBtn: "Mute",
     unmuteMediaBtn: "Restore Sound",
+    darkModeBtn: "Dark Mode",
+    lightModeBtn: "Light Mode",
     endBreakBtn: "End Break Early",
     waterReminder: "Drink a glass of water and look away from the screen.",
     standReminder: "Stand up and move — your neck, shoulders and legs need a reset.",
@@ -160,6 +164,7 @@ const state = {
   appVersion: "",
   systemMuted: false,
   mutePending: false,
+  darkMode: false,
 };
 
 let T = STRINGS.zh;
@@ -213,9 +218,11 @@ const els = {
   lockQuote: document.querySelector("#lock-quote"),
   lockReminder: document.querySelector("#lock-reminder"),
   muteMediaBtn: document.querySelector("#mute-media-btn"),
+  darkModeBtn: document.querySelector("#dark-mode-btn"),
 };
 
 const isLockView = window.location.hash.startsWith("#lock");
+const LOCK_THEME_KEY = "focus-lock-lock-theme";
 
 // ── i18n helpers ───────────────────────────────────────────────────────────────
 
@@ -253,6 +260,7 @@ function applyI18n() {
     versionEl.textContent = `${T.aboutVersionPrefix} ${state.appVersion}`;
   }
   if (isLockView) updateMuteUi();
+  updateDarkModeUi();
   if (!isLockView && els.taskInputs[0]) {
     els.taskInputs.forEach((input, i) => {
       input.placeholder = T.taskPlaceholder(i);
@@ -266,6 +274,21 @@ function updateMuteUi() {
   els.muteMediaBtn.setAttribute("aria-pressed", String(state.systemMuted));
   els.muteMediaBtn.setAttribute("aria-busy", String(state.mutePending));
   els.muteMediaBtn.disabled = state.mutePending;
+}
+
+function updateDarkModeUi() {
+  els.lockShell.dataset.theme = state.darkMode ? "dark" : "light";
+  els.darkModeBtn.textContent = state.darkMode ? T.lightModeBtn : T.darkModeBtn;
+  els.darkModeBtn.setAttribute("aria-pressed", String(state.darkMode));
+}
+
+function loadLockTheme() {
+  try {
+    state.darkMode = localStorage.getItem(LOCK_THEME_KEY) === "dark";
+  } catch (_) {
+    // Keep the toggle usable when browser storage is unavailable.
+  }
+  updateDarkModeUi();
 }
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
@@ -579,6 +602,16 @@ function bindEvents() {
     );
     dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
   } else {
+    els.darkModeBtn.addEventListener("click", () => {
+      state.darkMode = !state.darkMode;
+      updateDarkModeUi();
+      try {
+        localStorage.setItem(LOCK_THEME_KEY, state.darkMode ? "dark" : "light");
+      } catch (_) {}
+    });
+    window.addEventListener("storage", (event) => {
+      if (event.key === LOCK_THEME_KEY || event.key === null) loadLockTheme();
+    });
     els.endBreakBtn.addEventListener("click", async () => {
       try { await invoke("exit_break_lock"); } catch (_) {}
     });
@@ -616,6 +649,7 @@ function bindEvents() {
 // ── Init ───────────────────────────────────────────────────────────────────────
 
 async function init() {
+  loadLockTheme();
   if (isLockView) {
     els.appShell.hidden = true;
     els.lockShell.hidden = false;

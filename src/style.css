@@ -653,6 +653,22 @@ input[type="checkbox"] {
   overflow: hidden;
 }
 
+.lock-shell[data-theme="dark"] {
+  color-scheme: dark;
+  --surface: #20242c;
+  --border: #343a46;
+  --text: #f0f2f5;
+  --text-2: #c7cdd7;
+  --muted: #a0a9b8;
+  --accent: #ff9a52;
+  --accent-bg: #402c20;
+  --green: #69db7c;
+  --green-bg: #183b25;
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
+  background: #14171d;
+  color: var(--text);
+}
+
 .lock-content {
   width: 100%;
   max-width: 900px;
@@ -787,10 +803,15 @@ input[type="checkbox"] {
   margin-top: 18px;
 }
 
-.lock-media-btn {
+.lock-toolbar {
   position: fixed;
   right: max(24px, env(safe-area-inset-right));
   bottom: max(24px, env(safe-area-inset-bottom));
+  display: flex;
+  gap: 10px;
+}
+
+.lock-media-btn {
   min-width: 112px;
   background: var(--text);
   color: #fff;
