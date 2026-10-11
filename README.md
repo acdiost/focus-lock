@@ -31,13 +31,19 @@ v2.1.1 以前的版本界面
 
 打开 DMG 后，把 **FocusLock** 拖到 **Applications** 文件夹。
 
-如果首次打开时提示「无法验证开发者」，在 Finder 中右键点击应用，选择 **打开**，再确认打开即可。
+安装后弹出 DMG，再从 **Applications** 打开应用，避免搜索时同时出现安装盘中的副本。
 
-如果提示「已损坏，无法打开」，可在终端执行：
+macOS 安装包使用 ad-hoc 签名，尚未经过 Apple 公证。如果首次打开时提示「无法验证开发者」，请在尝试打开后进入 **系统设置 → 隐私与安全性**，找到 FocusLock 并点击 **仍要打开**。
+
+旧版 2.2.1 的 Apple Silicon 安装包缺少完整应用签名，可能提示「已损坏，无法打开」。确认从本仓库 Releases 下载后，可以仅对该应用修复签名并移除下载隔离标记：
 
 ```bash
-xattr -cr /Applications/FocusLock.app
+codesign --force --sign - --timestamp=none /Applications/FocusLock.app
+codesign --verify --deep --strict /Applications/FocusLock.app
+xattr -dr com.apple.quarantine /Applications/FocusLock.app
 ```
+
+如果搜索中仍有两份 FocusLock，请检查是否存在本地构建目录下的 `.app` 副本。将不再使用的构建副本移入以 `.noindex` 结尾的目录，可避免它继续出现在 Spotlight 搜索中。
 
 ### Windows
 

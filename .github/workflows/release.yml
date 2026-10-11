@@ -77,3 +77,16 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }} -- --locked
+
+      - name: Verify macOS app and DMG signatures
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir="src-tauri/target/${{ matrix.rust-target }}/release/bundle"
+          codesign --verify --deep --strict --verbose=2 "$bundle_dir/macos/FocusLock.app"
+          mount_dir="$(mktemp -d)/FocusLock.noindex"
+          mkdir -p "$mount_dir"
+          trap 'hdiutil detach "$mount_dir" >/dev/null 2>&1 || true' EXIT
+          hdiutil attach "$bundle_dir"/dmg/*.dmg -nobrowse -readonly -mountpoint "$mount_dir"
+          codesign --verify --deep --strict --verbose=2 "$mount_dir/FocusLock.app"

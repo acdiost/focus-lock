@@ -43,7 +43,7 @@
     "macOS": {
       "frameworks": [],
       "minimumSystemVersion": "10.15",
-      "signingIdentity": null,
+      "signingIdentity": "-",
       "entitlements": null,
       "hardenedRuntime": false,
       "dmg": {
